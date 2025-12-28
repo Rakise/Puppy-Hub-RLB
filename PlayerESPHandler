@@ -1,4 +1,5 @@
 -- PlayerESP Otimizado para Performance Máxima
+-- Updated: Fixes ESP disappearing on respawn/character switch
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -209,10 +210,24 @@ local function createFrameWithLayout(frameName, layoutConfig, parent)
 end
 
 function PlayerESP:createBillboard(player)
+    -- Wait for Character to be present
     local character = player.Character
-    if not character or character:FindFirstChild("PlayerESP") then return end
-    local adornee = getBestAdornee(character)
+    if not character then return end
+    
+    -- FIXED: Check if billboard already exists to prevent duplicates
+    if character:FindFirstChild("PlayerESP") then return end
+
+    -- FIXED: Use WaitForChild to ensure critical parts are loaded before attaching
+    -- This fixes the issue where ESP doesn't appear on new characters because parts aren't ready
+    local rootPart = character:WaitForChild("HumanoidRootPart", 10) 
+    if not rootPart then 
+        -- If RootPart takes too long, try falling back to standard Adornee search
+        if not getBestAdornee(character) then return end
+    end
+    
+    local adornee = getBestAdornee(character) or rootPart
     if not adornee then return end
+
     local billboard = newInstance("BillboardGui")
     billboard.Name = "PlayerESP"
     billboard.LightInfluence = 1
@@ -245,7 +260,10 @@ end
 
 function PlayerESP:removeBillboard(player)
     local data = self.espBillboards[player]
-    if data and data.billboard then data.billboard:Destroy(); self.espBillboards[player] = nil end
+    if data and data.billboard then 
+        data.billboard:Destroy() 
+        self.espBillboards[player] = nil 
+    end
     self.dataCache[player] = nil
 end
 
@@ -298,21 +316,49 @@ function PlayerESP:updateBillboards()
     self._lastBillboardUpdate = currentTime
     local toRemove = {}
     for player, data in pairs(self.espBillboards) do
-        if player and player.Parent and player.Character then self:updatePlayerData(player)
-        else table.insert(toRemove, player) end
+        if player and player.Parent and player.Character then 
+            self:updatePlayerData(player)
+        else 
+            table.insert(toRemove, player) 
+        end
     end
     for i = 1, #toRemove do self:removeBillboard(toRemove[i]) end
 end
 
 function PlayerESP:connectPlayer(player)
     if player == LocalPlayer then return end
+    
+    -- Cleanup existing manager
     local mgr = self._playerConnMgrs[player]
     if mgr then mgr:disconnectAll() end
+    
     mgr = ConnectionManager.new()
     self._playerConnMgrs[player] = mgr
-    mgr:add(player.CharacterAdded:Connect(function(character) if self.enabled then task.wait(0.1); self:createBillboard(player) end end))
-    mgr:add(player.CharacterRemoving:Connect(function(character) self:removeBillboard(player) end))
-    if player.Character then self:createBillboard(player) end
+    
+    -- Connect CharacterAdded
+    mgr:add(player.CharacterAdded:Connect(function(character) 
+        if self.enabled then 
+            self:removeBillboard(player) -- Ensure old billboard is gone
+            
+            -- FIXED: Increased wait time and logic inside createBillboard handles the WaitForChild
+            -- This ensures we don't try to create it on a nil or loading character
+            task.spawn(function()
+                 character:WaitForChild("HumanoidRootPart", 10) -- Double check here before calling create
+                 self:createBillboard(player) 
+            end)
+        end 
+    end))
+    
+    mgr:add(player.CharacterRemoving:Connect(function(character) 
+        self:removeBillboard(player) 
+    end))
+    
+    -- Initial creation if character exists
+    if player.Character then 
+        task.spawn(function()
+            self:createBillboard(player)
+        end)
+    end
 end
 
 function PlayerESP:enable()

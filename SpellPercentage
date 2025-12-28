@@ -1,4 +1,5 @@
 -- SpellPercentage Module based on PuppyAdmin logic
+-- Updated: Fixes not reloading on player respawn
 local Players = game:GetService("Players")
 
 local SpellPercentage = {}
@@ -57,16 +58,10 @@ end
 -- Initialize Overlays Logic
 function SpellPercentage:_initializeOverlays()
     safeCall(function()
-        -- If already created, just ensure parent is correct
-        if self.normal_overlay and self.snap_overlay then
-             if not self.manaBar or not self.manaBar.Parent then
-                self.manaBar = self.playerGui:WaitForChild("StatGui", 5):WaitForChild("LeftContainer", 5):WaitForChild("Mana", 5)
-             end
-             if self.manaBar then
-                 self.normal_overlay.Parent = self.manaBar
-                 self.snap_overlay.Parent = self.manaBar
-             end
-             return -- Already initialized
+        -- If already created AND valid, just ensure parent is correct
+        if self.normal_overlay and self.snap_overlay and self.manaBar and self.manaBar.Parent then
+             -- All good, nothing to do
+             return
         end
 
         -- UPDATED: Safer chaining for WaitForChild
@@ -182,15 +177,19 @@ end
 -- Connect Listeners Logic
 function SpellPercentage:_connectSpellListeners(char)
     safeCall(function()
-        -- NEW: Ensure overlays are initialized before connecting
-        if not self.manaBar or not self.manaBar.Parent then
-            self:_initializeOverlays()
-            if not self.manaBar then
-                warn("SpellPercentage: Cannot connect listeners, Mana bar not found on respawn.")
-                return -- Give up for this character
-            end
+        -- FIXED: Force Reset UI references when character is added
+        -- This ensures that if the PlayerGui was reset (common on respawn), we find the NEW elements
+        self.manaBar = nil
+        self.normal_overlay = nil
+        self.snap_overlay = nil
+        
+        -- Attempt to initialize overlays with new GUI
+        self:_initializeOverlays()
+        
+        if not self.manaBar then
+            warn("SpellPercentage: Cannot connect listeners, Mana bar not found on respawn.")
+            return -- Give up for this character
         end
-        -- End NEW
 
         -- Disconnect existing if they exist
         if self._connections.SpellToolAdded then self._connections.SpellToolAdded:Disconnect() end
@@ -219,19 +218,20 @@ function SpellPercentage:enable()
     local player = Players.LocalPlayer
     local char = player and player.Character
 
-    -- Re-check mana bar just in case
-    if not self.manaBar or not self.manaBar.Parent then
-        self:_initializeOverlays() -- Try to re-initialize if missing
-        if not self.manaBar then 
-            warn("Cannot enable SpellPercentage: Mana bar not found.")
-            self.enabled = false -- Stay disabled if still not found
-            return 
-        end
+    -- Force re-init on enable
+    self:_initializeOverlays()
+    
+    if not self.manaBar then 
+        warn("Cannot enable SpellPercentage: Mana bar not found.")
+        self.enabled = false -- Stay disabled if still not found
+        return 
     end
 
     -- Connect CharacterAdded listener
     if not self._connections.CharacterAdded then -- Only connect once
         self._connections.CharacterAdded = player.CharacterAdded:Connect(function(newChar)
+            -- Wait a frame for GUI to potentially reload
+            task.wait()
             self:_connectSpellListeners(newChar)
         end)
     end
