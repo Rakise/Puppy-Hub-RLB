@@ -1,0 +1,279 @@
+-- SpellPercentage Module based on PuppyAdmin logic
+local Players = game:GetService("Players")
+
+local SpellPercentage = {}
+SpellPercentage.__index = SpellPercentage
+
+-- Spell cost data copied from PuppyAdmin
+local global_variables = {
+	spell_cost = {
+		["Armis"] = {{40, 60}, {70, 80}}, ["Trickstus"] = {{30, 70}, {30, 50}},
+		["Scrupus"] = {{30, 100}, {30, 100}}, ["Celeritas"] = {{70, 90}, {70, 80}},
+		["Ignis"] = {{80, 95}, {53, 57}}, ["Gelidus"] = {{80, 95}, {85, 100}},
+		["Viribus"] = {{25, 35}, {60, 70}}, ["Sagitta Sol"] = {{50, 65}, {40, 60}},
+		["Tenebris"] = {{90, 100}, {40, 60}}, ["Nocere"] = {{70, 85}, {70, 85}},
+		["Hystericus"] = {{75, 90}, {15, 35}}, ["Shrieker"] = {{30, 50}, {30, 50}},
+		["Verdien"] = {{75, 100}, {75, 85}}, ["Contrarium"] = {{80, 95}, {70, 90}},
+		["Floresco"] = {{90, 100}, {80, 95}}, ["Perflora"] = {{70, 90}, {30, 50}},
+		["Manus Dei"] = {{90, 95}, {50, 60}}, ["Fons Vitae"] = {{75, 100}, {75, 100}},
+		["Trahere"] = {{75, 85}, {75, 85}}, ["Furantur"] = {{60, 80}, {60, 80}},
+		["Inferi"] = {{10, 30}, {10, 30}}, ["Howler"] = {{60, 80}, {60, 80}},
+		["Secare"] = {{90, 95}, {90, 95}}, ["Ligans"] = {{63, 80}, {63, 80}},
+		["Reditus"] = {{50, 100}, {50, 100}}, ["Fimbulvetr"] = {{86, 90}, {70, 80}},
+		["Gate"] = {{75, 80}, {75, 80}}, ["Snarvindur"] = {{60, 75}, {20, 30}},
+		["Hoppa"] = {{40, 60}, {50, 60}}, ["Percutiens"] = {{60, 70}, {70, 80}},
+		["Dominus"] = {{50, 100}, {50, 100}}, ["Custos"] = {{45, 65}, {45, 65}},
+		["Claritum"] = {{90, 100}, {90, 100}}, ["Globus"] = {{70, 100}, {70, 100}},
+		["Intermissum"] = {{70, 100}, {70, 100}}, ["Sraunus"] = {{1, 50}, {1, 50}},
+		["Nosferatus"] = {{95, 100}, {95, 100}}, ["Gourdus"] = {{80, 90}, {80, 90}},
+		["Telorum"] = {{80, 90}, {75, 85}}, ["Velo"] = {{0, 100}, {50, 60}}
+	}
+}
+
+function SpellPercentage.new(playerGui)
+    local self = setmetatable({}, SpellPercentage)
+    self.playerGui = playerGui
+    self.enabled = false
+    self.normal_overlay = nil
+    self.snap_overlay = nil
+    self.manaBar = nil
+    self._connections = {}
+    
+    self:_initializeOverlays()
+    
+    return self
+end
+
+-- Helper: Safecall wrapper
+local function safeCall(func, ...)
+	local success, result = pcall(func, ...)
+	if not success then
+		local trace = debug.traceback()
+		warn("SpellPercentage Error:", result, "\nStack Trace:\n" .. trace)
+	end
+	return success, result
+end
+
+-- Initialize Overlays Logic
+function SpellPercentage:_initializeOverlays()
+    safeCall(function()
+        -- If already created, just ensure parent is correct
+        if self.normal_overlay and self.snap_overlay then
+             if not self.manaBar or not self.manaBar.Parent then
+                self.manaBar = self.playerGui:WaitForChild("StatGui", 5):WaitForChild("LeftContainer", 5):WaitForChild("Mana", 5)
+             end
+             if self.manaBar then
+                 self.normal_overlay.Parent = self.manaBar
+                 self.snap_overlay.Parent = self.manaBar
+             end
+             return -- Already initialized
+        end
+
+        -- UPDATED: Safer chaining for WaitForChild
+        local statGui = self.playerGui:WaitForChild("StatGui", 5)
+        if not statGui then
+            warn("Could not find Player StatGui. Spell Percentage Overlays disabled.")
+            return
+        end
+        local leftContainer = statGui:WaitForChild("LeftContainer", 5)
+        if not leftContainer then
+            warn("Could not find Player StatGui.LeftContainer. Spell Percentage Overlays disabled.")
+            return
+        end
+        self.manaBar = leftContainer:WaitForChild("Mana", 5)
+        if not self.manaBar then
+            warn("Could not find Player StatGui.LeftContainer.Mana. Spell Percentage Overlays disabled.")
+            return
+        end
+        -- END UPDATED
+
+        -- Normal Spell Overlay (Blue, Horizontal)
+        self.normal_overlay = Instance.new("Frame")
+        self.normal_overlay.Name = "NormalSpellOverlay"
+        self.normal_overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 255)
+        self.normal_overlay.BorderSizePixel = 0
+        self.normal_overlay.BackgroundTransparency = 0.5
+        self.normal_overlay.AnchorPoint = Vector2.new(0, 0)
+        self.normal_overlay.Position = UDim2.fromScale(0, 0) -- Positioned at the start
+        self.normal_overlay.Size = UDim2.new(1, 0, 0, 5) -- Full width, fixed height (Will be updated)
+        self.normal_overlay.Visible = false
+        self.normal_overlay.ZIndex = self.manaBar.ZIndex + 1
+        self.normal_overlay.Parent = self.manaBar
+
+        -- Snap Spell Overlay (Red, Horizontal)
+        self.snap_overlay = Instance.new("Frame")
+        self.snap_overlay.Name = "SnapSpellOverlay"
+        self.snap_overlay.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+        self.snap_overlay.BorderSizePixel = 0
+        self.snap_overlay.BackgroundTransparency = 0.5
+        self.snap_overlay.AnchorPoint = Vector2.new(0, 0)
+        self.snap_overlay.Position = UDim2.new(0, 0, 0, 6) -- Positioned below normal overlay (Will be updated)
+        self.snap_overlay.Size = UDim2.new(1, 0, 0, 5) -- Full width, fixed height (Will be updated)
+        self.snap_overlay.Visible = false
+        self.snap_overlay.ZIndex = self.manaBar.ZIndex + 1
+        self.snap_overlay.Parent = self.manaBar
+    end)
+end
+
+-- Update Overlays Logic
+function SpellPercentage:_updateSpellOverlays(spell_tool)
+    safeCall(function()
+        if not self.manaBar or not self.manaBar.Parent or not self.normal_overlay or not self.snap_overlay then 
+            if self.normal_overlay then self.normal_overlay.Visible = false end
+            if self.snap_overlay then self.snap_overlay.Visible = false end
+            return
+        end
+        
+        -- Check if module is enabled FIRST
+        if not self.enabled then
+            self.normal_overlay.Visible = false
+            self.snap_overlay.Visible = false
+            return
+        end
+        
+        -- Proceed with update logic if enabled
+        if spell_tool and spell_tool:IsA("Tool") then
+            local spell_cost_data = global_variables.spell_cost[spell_tool.Name]
+            
+            if spell_cost_data then
+                local normal_cast_info = spell_cost_data[1]
+                if normal_cast_info then
+                    -- BUGFIX: Use the MAX value and invert it (100 - max) to get the correct TOP Y-position
+                    -- The mana bar is 0% at the bottom (Y=1) and 100% at the top (Y=0)
+                    local minCost = math.min(normal_cast_info[1], normal_cast_info[2])
+                    local maxCost = math.max(normal_cast_info[1], normal_cast_info[2])
+                    
+                    local topPercent = (100 - maxCost) / 100 -- Position is based on the highest mana value
+                    local heightPercent = (maxCost - minCost) / 100 -- Height is the difference
+
+                    self.normal_overlay.Position = UDim2.new(0, 0, topPercent, 0) 
+                    self.normal_overlay.Size = UDim2.new(1, 0, heightPercent, 0)
+                    self.normal_overlay.Visible = true
+                else
+                    self.normal_overlay.Visible = false
+                end
+
+                local snap_cast_info = spell_cost_data[2]
+                if snap_cast_info then
+                    -- BUGFIX: Apply the same inversion logic for the snap cast
+                    local minCost = math.min(snap_cast_info[1], snap_cast_info[2])
+                    local maxCost = math.max(snap_cast_info[1], snap_cast_info[2])
+
+                    local topPercent = (100 - maxCost) / 100 -- Position is based on the highest mana value
+                    local heightPercent = (maxCost - minCost) / 100 -- Height is the difference
+                    
+                    self.snap_overlay.Position = UDim2.new(0, 0, topPercent, 0) 
+                    self.snap_overlay.Size = UDim2.new(1, 0, heightPercent, 0)
+                    self.snap_overlay.Visible = true
+                else
+                    self.snap_overlay.Visible = false
+                end
+            else
+                self.normal_overlay.Visible = false
+                self.snap_overlay.Visible = false
+            end
+        else
+            self.normal_overlay.Visible = false
+            self.snap_overlay.Visible = false
+        end
+    end)
+end
+
+-- Connect Listeners Logic
+function SpellPercentage:_connectSpellListeners(char)
+    safeCall(function()
+        -- NEW: Ensure overlays are initialized before connecting
+        if not self.manaBar or not self.manaBar.Parent then
+            self:_initializeOverlays()
+            if not self.manaBar then
+                warn("SpellPercentage: Cannot connect listeners, Mana bar not found on respawn.")
+                return -- Give up for this character
+            end
+        end
+        -- End NEW
+
+        -- Disconnect existing if they exist
+        if self._connections.SpellToolAdded then self._connections.SpellToolAdded:Disconnect() end
+        if self._connections.SpellToolRemoved then self._connections.SpellToolRemoved:Disconnect() end
+
+        self._connections.SpellToolAdded = char.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") then
+                self:_updateSpellOverlays(child) -- Update when tool added
+            end
+        end)
+        self._connections.SpellToolRemoved = char.ChildRemoved:Connect(function(child)
+            if child:IsA("Tool") then
+                task.defer(function() self:_updateSpellOverlays(char:FindFirstChildWhichIsA("Tool")) end) -- Update after removal
+            end
+        end)
+        -- Initial update
+        self:_updateSpellOverlays(char:FindFirstChildWhichIsA("Tool"))
+    end)
+end
+
+-- Enable/Disable Logic
+function SpellPercentage:enable()
+    if self.enabled then return end
+    self.enabled = true
+
+    local player = Players.LocalPlayer
+    local char = player and player.Character
+
+    -- Re-check mana bar just in case
+    if not self.manaBar or not self.manaBar.Parent then
+        self:_initializeOverlays() -- Try to re-initialize if missing
+        if not self.manaBar then 
+            warn("Cannot enable SpellPercentage: Mana bar not found.")
+            self.enabled = false -- Stay disabled if still not found
+            return 
+        end
+    end
+
+    -- Connect CharacterAdded listener
+    if not self._connections.CharacterAdded then -- Only connect once
+        self._connections.CharacterAdded = player.CharacterAdded:Connect(function(newChar)
+            self:_connectSpellListeners(newChar)
+        end)
+    end
+
+    -- Connect listeners for current character
+    if char then
+        self:_connectSpellListeners(char)
+    end
+    
+    -- Force update visibility based on current tool
+    self:_updateSpellOverlays(char and char:FindFirstChildWhichIsA("Tool"))
+end
+
+function SpellPercentage:disable()
+    if not self.enabled then return end
+    self.enabled = false
+
+    -- Disconnect tool listeners
+    if self._connections.SpellToolAdded then self._connections.SpellToolAdded:Disconnect(); self._connections.SpellToolAdded = nil end
+    if self._connections.SpellToolRemoved then self._connections.SpellToolRemoved:Disconnect(); self._connections.SpellToolRemoved = nil end
+    -- Keep CharacterAdded connection alive
+
+    -- Hide overlays
+    if self.normal_overlay then self.normal_overlay.Visible = false end
+    if self.snap_overlay then self.snap_overlay.Visible = false end
+end
+
+-- Cleanup
+function SpellPercentage:destroy()
+    self:disable()
+    -- Disconnect all listeners
+    if self._connections.CharacterAdded then self._connections.CharacterAdded:Disconnect(); self._connections.CharacterAdded = nil end
+    if self._connections.SpellToolAdded then self._connections.SpellToolAdded:Disconnect(); self._connections.SpellToolAdded = nil end
+    if self._connections.SpellToolRemoved then self._connections.SpellToolRemoved:Disconnect(); self._connections.SpellToolRemoved = nil end
+    
+    if self.normal_overlay then self.normal_overlay:Destroy() end
+    if self.snap_overlay then self.snap_overlay:Destroy() end
+    -- Clear references
+    self.normal_overlay = nil
+    self.snap_overlay = nil
+    self.manaBar = nil
+    self._connections = {}
+end
+
+return SpellPercentage

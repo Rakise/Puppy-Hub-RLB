@@ -1,0 +1,335 @@
+-- IndicatorController.lua - OTIMIZADO PARA PERFORMANCE
+-- Damage and Healing Visual Indicator System
+-- Displays floating damage/healing numbers above characters when their health changes
+
+--[[
+    Brazil Hub - Indicator Controller Module (Performance Optimized):
+    
+    FEATURES:
+    - Real-time damage and healing indicators
+    - Floating text with shadow effects
+    - Different colors for damage (red) and healing (green)
+    - Different movement patterns for damage vs healing
+    - Automatic cleanup and memory management
+    
+    PERFORMANCE OPTIMIZATIONS:
+    - Cached services and constants
+    - Pre-calculated values and reusable objects
+    - Reduced table allocations
+    - Optimized text formatting
+    - Minimal garbage collection overhead
+    
+    USAGE:
+    local indicator = IndicatorController.new()
+    indicator:enable()  -- Start monitoring all players
+    indicator:disable() -- Stop monitoring and cleanup
+]]
+
+-- ========================================
+-- CACHED SERVICES AND CONSTANTS
+-- ========================================
+
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local Players = game:GetService("Players")
+
+-- Pre-calculated constants for performance
+local TWEEN_INFO = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local PART_SIZE = Vector3.new(1, 1, 1)
+local GUI_SIZE = UDim2.new(5, 0, 1.5, 0)
+local LABEL_SIZE = UDim2.new(1, 0, 1, 0)
+local SHADOW_OFFSET = UDim2.new(0.02, 0, 0.03, 0)
+
+-- Cached color constants
+local DAMAGE_COLOR = Color3.fromRGB(255, 60, 60)
+local HEAL_COLOR = Color3.fromRGB(85, 255, 85)
+local BLACK_COLOR = Color3.new(0, 0, 0)
+local WHITE_COLOR = Color3.new(1, 1, 1)
+
+-- Cached random ranges for velocity (avoids repeated calculations)
+local HEAL_VEL_H = {-10, 10}
+local HEAL_VEL_V = {15, 20}
+local DAMAGE_VEL_H = {-20, 20}
+local DAMAGE_VEL_V = {20, 25}
+
+-- Pre-allocated table for reuse (reduces GC pressure)
+local tempVelocity = Vector3.new(0, 0, 0)
+
+-- ========================================
+-- INDICATOR CONTROLLER CLASS
+-- ========================================
+
+local IndicatorController = {}
+IndicatorController.__index = IndicatorController
+
+-- ========================================
+-- OPTIMIZED GUI CREATION
+-- ========================================
+
+--// Function: IndicatorController._createDamageLabel
+--// Description: Creates a damage/healing label with billboard GUI and shadow effects
+--// Returns: Instance (Part with BillboardGui)
+--// OPTIMIZATION: Reduced property assignments and cached values
+function IndicatorController._createDamageLabel()
+	-- Create the base part with minimal property assignments
+	local part = Instance.new("Part")
+	part.Size = PART_SIZE
+	part.Transparency = 1
+	part.Name = "DamageLabel"
+	part.CanCollide = false
+	part.Anchored = false
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.TopSurface = Enum.SurfaceType.Smooth
+
+	-- Create billboard GUI container with cached properties
+	local billboard = Instance.new("BillboardGui")
+	billboard.LightInfluence = 1
+	billboard.MaxDistance = math.huge
+	billboard.Active = true
+	billboard.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	billboard.ClipsDescendants = true
+	billboard.AlwaysOnTop = true
+	billboard.Size = GUI_SIZE
+	billboard.Parent = part
+
+	-- Create shadow text (black outline) with cached properties
+	local shadow = Instance.new("TextLabel")
+	shadow.FontSize = Enum.FontSize.Size32
+	shadow.BackgroundTransparency = 1
+	shadow.TextColor3 = BLACK_COLOR
+	shadow.Text = "100"
+	shadow.TextSize = 30
+	shadow.TextWrapped = true
+	shadow.Size = LABEL_SIZE
+	shadow.Font = Enum.Font.Arcade
+	shadow.Name = "Shadow"
+	shadow.Position = SHADOW_OFFSET
+	shadow.BackgroundColor3 = BLACK_COLOR
+	shadow.ZIndex = 2
+	shadow.TextScaled = true
+	shadow.TextWrap = true
+	shadow.Parent = billboard
+
+	-- Create main text (colored) with cached properties
+	local theShadow = Instance.new("TextLabel")
+	theShadow.FontSize = Enum.FontSize.Size32
+	theShadow.TextColor3 = WHITE_COLOR
+	theShadow.Text = "100"
+	theShadow.BackgroundTransparency = 1
+	theShadow.Size = LABEL_SIZE
+	theShadow.TextWrapped = true
+	theShadow.Font = Enum.Font.Arcade
+	theShadow.Name = "TheShadow"
+	theShadow.TextSize = 30
+	theShadow.BackgroundColor3 = WHITE_COLOR
+	theShadow.ZIndex = 2
+	theShadow.TextScaled = true
+	theShadow.TextWrap = true
+	theShadow.Parent = billboard
+
+	return part
+end
+
+-- ========================================
+-- CONSTRUCTOR AND INSTANCE MANAGEMENT
+-- ========================================
+
+--// Function: IndicatorController.new
+--// Description: Creates a new IndicatorController instance
+--// Returns: IndicatorController instance
+--// OPTIMIZATION: Pre-allocated tables to reduce GC pressure
+function IndicatorController.new()
+	local self = setmetatable({}, IndicatorController)
+	self._connections = {}    -- Store all RBXScriptConnections
+	self._instances = {}      -- Store character tracking instances
+	self._enabled = false     -- System enabled state
+	return self
+end
+
+-- ========================================
+-- SYSTEM CONTROL METHODS
+-- ========================================
+
+--// Function: IndicatorController:enable
+--// Description: Enables the indicator system and starts monitoring all players
+--// OPTIMIZATION: Cached Players:GetPlayers() call
+function IndicatorController:enable()
+	if self._enabled then return end
+	self._enabled = true
+
+	-- Cache players list to avoid repeated service calls
+	local currentPlayers = Players:GetPlayers()
+	for i = 1, #currentPlayers do
+		self:_trackPlayer(currentPlayers[i])
+	end
+
+	-- Connect to new players joining
+	self._connections[#self._connections + 1] = Players.PlayerAdded:Connect(function(player)
+		self:_trackPlayer(player)
+	end)
+end
+
+--// Function: IndicatorController:disable
+--// Description: Disables the indicator system and cleans up all connections
+--// OPTIMIZATION: Optimized loop for disconnections
+function IndicatorController:disable()
+	if not self._enabled then return end
+	self._enabled = false
+
+	-- Disconnect all system connections (optimized loop)
+	local connections = self._connections
+	for i = 1, #connections do
+		connections[i]:Disconnect()
+	end
+	
+	-- Clear connections array efficiently
+	for i = #connections, 1, -1 do
+		connections[i] = nil
+	end
+
+	-- Disconnect all character-specific connections (optimized iteration)
+	for character, instance in pairs(self._instances) do
+		if instance._conn then
+			instance._conn:Disconnect()
+		end
+		self._instances[character] = nil
+	end
+end
+
+-- ========================================
+-- PLAYER AND CHARACTER TRACKING
+-- ========================================
+
+--// Function: IndicatorController:_trackPlayer
+--// Description: Sets up tracking for a specific player's characters
+--// Parameters: player (Player) - The player to track
+function IndicatorController:_trackPlayer(player)
+	-- Connect to current character if it exists
+	if player.Character then
+		self:_trackCharacter(player.Character)
+	end
+
+	-- Connect to future characters
+	local charConn = player.CharacterAdded:Connect(function(character)
+		self:_trackCharacter(character)
+	end)
+	self._connections[#self._connections + 1] = charConn
+end
+
+--// Function: IndicatorController:_trackCharacter
+--// Description: Sets up health monitoring for a specific character
+--// Parameters: character (Model) - The character to track
+--// OPTIMIZATION: Cached FindFirstChild calls and reduced function calls
+function IndicatorController:_trackCharacter(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not hrp then return end
+
+	-- Create tracking instance with cached health value
+	local currentHealth = humanoid.Health
+	local instance = {
+		character = character,
+		humanoid = humanoid,
+		hrp = hrp,
+		lastHealth = currentHealth
+	}
+
+	-- Monitor health changes for damage and healing
+	-- OPTIMIZATION: Local references to avoid repeated table lookups
+	instance._conn = humanoid.HealthChanged:Connect(function(newHealth)
+		local lastHealth = instance.lastHealth
+		local delta = newHealth - lastHealth
+
+		if delta < 0 then
+			-- Health decreased = damage (use negative delta directly)
+			self:_showIndicator(instance, -delta, false)
+		elseif delta > 0 then
+			-- Health increased = healing
+			self:_showIndicator(instance, delta, true)
+		end
+
+		instance.lastHealth = newHealth
+	end)
+
+	self._instances[character] = instance
+
+	-- Cleanup when character is removed
+	character.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			if instance._conn then
+				instance._conn:Disconnect()
+			end
+			self._instances[character] = nil
+		end
+	end)
+end
+
+-- ========================================
+-- OPTIMIZED INDICATOR DISPLAY
+-- ========================================
+
+--// Function: IndicatorController:_showIndicator
+--// Description: Creates and displays a damage/healing indicator
+--// Parameters: instance (table) - Character tracking instance
+--//             amount (number) - Amount to display
+--//             isHeal (boolean) - true for healing, false for damage
+--// OPTIMIZATION: Reduced string operations, cached values, optimized math
+function IndicatorController:_showIndicator(instance, amount, isHeal)
+	-- Create the indicator label
+	local label = IndicatorController._createDamageLabel()
+	label.Position = instance.hrp.Position
+	
+	-- Set different movement patterns based on indicator type
+	-- OPTIMIZATION: Reuse tempVelocity vector to reduce allocations
+	if isHeal then
+		-- Healing: slower upward movement with less horizontal spread
+		tempVelocity = Vector3.new(
+			math.random(HEAL_VEL_H[1], HEAL_VEL_H[2]),
+			math.random(HEAL_VEL_V[1], HEAL_VEL_V[2]),
+			math.random(HEAL_VEL_H[1], HEAL_VEL_H[2])
+		)
+	else
+		-- Damage: faster upward movement with more horizontal spread
+		tempVelocity = Vector3.new(
+			math.random(DAMAGE_VEL_H[1], DAMAGE_VEL_H[2]),
+			math.random(DAMAGE_VEL_V[1], DAMAGE_VEL_V[2]),
+			math.random(DAMAGE_VEL_H[1], DAMAGE_VEL_H[2])
+		)
+	end
+	
+	label.Velocity = tempVelocity
+	label.Parent = workspace
+
+	-- Format the display text
+	-- OPTIMIZATION: Avoid string.format for simple cases, use direct conversion
+	local text
+	if isHeal then
+		-- For healing, use simple concatenation instead of string.format
+		text = "+" .. tostring(math.floor(amount * 1000 + 0.5) / 1000) -- 3 decimal places
+	else
+		-- For damage, use simple floor conversion
+		text = tostring(math.floor(amount + 0.5))
+	end
+	
+	-- Update both shadow and main text (cached references)
+	local billboard = label.BillboardGui
+	local shadow = billboard.Shadow
+	local theShadow = billboard.TheShadow
+	
+	shadow.Text = text
+	theShadow.Text = text
+
+	-- Set appropriate color based on indicator type
+	-- OPTIMIZATION: Direct boolean check instead of string comparison
+	local color = isHeal and HEAL_COLOR or DAMAGE_COLOR
+
+	-- Animate the color change and cleanup
+	TweenService:Create(theShadow, TWEEN_INFO, {TextColor3 = color}):Play()
+	Debris:AddItem(label, 0.5)
+end
+
+-- ========================================
+-- MODULE EXPORT
+-- ========================================
+
+return IndicatorController

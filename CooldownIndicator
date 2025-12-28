@@ -1,0 +1,354 @@
+-- CooldownIndicator Module
+-- Creates and animates cooldown overlays on the backpack UI
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+
+local CooldownIndicator = {}
+CooldownIndicator.__index = CooldownIndicator
+
+-- Cooldown data provided by user
+local cooldowns = {
+	----- Dragon Slayer -----
+	["Spear Crusher"] = {10, false},
+	["Wing Soar"] = {15, false},
+	["Thunder Spear Crash"] = {15, false},
+	["Dragon Roar"] = {15, false},
+	["Ensnaring Strikes"] = {21, false},
+	["Heroic Volley"] = {11, false},
+	["Justice Spears"] = {1, false},
+	["Triple Strike"] = {15, false},
+	["Serpent Strike"] = {15, false},
+	
+	----- Abyss Walker -----
+	["Great Cyclone"] = {10, false},
+	["Void Slicer"] = {10, false},
+	["Deflecting Spin"] = {17, false},
+	["Spinning Soul"] = {30, false},
+	["Wrathful Leap"] = {11, false},
+	["Shoulder Bash"] = {15, false},
+	["Abyssal Scream"] = {15, false},
+	
+	----- Oni -----
+	["Demon Flip"] = {10, false},
+	["Rising Dragon"] = {10, false},
+	["Augimas"] = {4, false},
+	["Augimas 2"] = {6.5, false},
+	["Rampage"] = {20, false},
+	["Leg Breaker"] = {10, false},
+	["Spin Kick"] = {10, false},
+	["Axe Kick"] = {10, false},
+	
+	----- Spy -----
+	["Bomb Jump"] = {15, false},
+	["Duelist Dash"] = {15, false},
+	["Mana Grenade"] = {10, false},
+	["Bullseye"] = {15, false},
+	["Auto Reload"] = {20, false},
+	["Needle's Eye"] = {10, false},
+	["The Wraith"] = {2.5, false},
+	["Elegant Slash"] = {10, false},
+	
+	----- Blacksmith -----
+	["Sapphire Shard"] = {15, false},
+	["Ruby Shard"] = {15, false},
+	["Opal Shard"] = {15, false},
+	
+	----- Shinobi -----
+	["Bane"] = {40, false},
+	["Grapple"] = {4, false},
+	["Rising Cloud"] = {4, false},
+	["Cruel Wind"] = {4, false},
+	["Owl Slash"] = {8, false},
+	["Shadowrush"] = {8, false},
+	
+	----- Deep Knight -----
+	["Soul Siphon"] = {15, false},
+	["Light Piercer"] = {8.5, false},
+	["Tethering Lance"] = {1, false},
+	["Deep Sacrifice"] = {15, false},
+	["Void Spear"] = {10, false},
+	["Leviathan Plunge"] = {80, false},
+	["Impale"] = {15, false},
+	["Chain Pull"] = {15, false},
+	
+	----- Sigil -----
+	["Action Surge"] = {22, false},
+	["Pommel Strike"] = {15, false},
+	["Disarming Strike"] = {30, false},
+	["Hyper Body"] = {120, false},
+	["Rod of Narsa"] = {5, false},
+	["Chain of Fate"] = {15, false},
+	["Parmarktini"] = {5, false},
+	["Counter"] = {10, false},
+	
+	----- Illusionist -----
+	["Dominus"] = {20, false},
+	["Custos"] = {25, false},
+	["Compress"] = {8, false},
+	["Duobe"] = {18, false},
+	["Terra Rebus"] = {10, false},
+	
+	----- Necromancer -----
+	["Command Monsters"] = {2, false},
+	
+	----- Druid -----
+	["Mirgeti"] = {5, false},
+	["Spindylus"] = {5, false},
+	["Krusa"] = {10, false},
+	
+	----- Faceless -----
+	["Shadow Fan"] = {10, false},
+	["Ethereal Strike"] = {15, false},
+	["Dagger Throw"] = {10, false},
+	["Lethality"] = {30, false},
+	["Triple Dagger Throw"] = {10, false},
+	["Falling Darkness"] = {25, false},
+	["Flash of Darkness"] = {25, false},
+	
+	----- Dragon Sage -----
+	["Lightning Drop"] = {6, false},
+	["Lightning Elbow"] = {10, false},
+	["Monastic Stance"] = {30, false},
+	["Seismic Toss"] = {10, false},
+	["Lightning Smite"] = {15, false},
+	["Thundering Leap"] = {15, false},
+	
+	----- Dark Sigil -----
+	["Dark Eruption"] = {15, false},
+	["Hunt"] = {20, false},
+	["Mirror"] = {10, false},
+	["Soul Burst"] = {10, false},
+	["Chase"] = {10, false},
+	
+	----- Race Abilities -----
+	["Flock"] = {20, false},
+	["Shift"] = {2.5, false},
+	["Trinket Shift"] = {1, false}, -- FIXED: Was 1G
+	["Exhaust"] = {30, false},
+	["Swiftfoot"] = {45, false},
+	["Fury"] = {300, false},
+	
+	----- Special Moves -----
+	["Subzero Strike"] = {15, false},
+	["Pickpocket"] = {3, false},
+	["Agility"] = {40, false},
+	["Stealth"] = {25, false}
+}
+
+
+function CooldownIndicator.new(playerGui)
+    local self = setmetatable({}, CooldownIndicator)
+    self.enabled = false
+    self.playerGui = playerGui
+    self.localPlayer = Players.LocalPlayer
+    self.mouse = self.localPlayer:GetMouse()
+    self._connections = {} -- For CharacterAdded
+    self._charConnections = {} -- For ChildAdded, ChildRemoved, Button1Down
+
+    -- Find UI paths
+    self.backpackGui = self.playerGui:WaitForChild("BackpackGui", 5)
+    self.mainFrame = self.backpackGui and self.backpackGui:WaitForChild("MainFrame", 5)
+    self.backpackFrame = self.backpackGui and self.backpackGui:WaitForChild("BackpackFrame", 5)
+    if self.backpackFrame then
+        self.backpackFrame = self.backpackFrame:WaitForChild("ScrollingFrame", 5)
+    end
+
+    if not self.mainFrame or not self.backpackFrame then
+        warn("[CooldownIndicator] Could not find Backpack UI. Module will not function.")
+    end
+    
+    return self
+end
+
+-- Finds the UI button that BackpackClient.lua created for a specific tool.
+function CooldownIndicator:FindToolButton(toolName)
+    if not self.mainFrame or not self.backpackFrame then return nil end
+    
+    -- Check the MainFrame (Hotbar) first
+  for _, button in ipairs(self.mainFrame:GetChildren()) do
+    if button:IsA("TextButton") and button.Text == toolName then
+      return button
+    end
+  end
+  
+  -- Check the BackpackFrame (Inventory)
+  for _, button in ipairs(self.backpackFrame:GetChildren()) do
+    if button:IsA("TextButton") and button.Text == toolName then
+      return button
+    end
+  end
+  
+  return nil
+end
+
+-- This is the function that runs when a melee/ability is used.
+function CooldownIndicator:TriggerCooldown(toolName)
+    local cooldownData = cooldowns[toolName]
+    if not cooldownData then return end
+    
+    -- 1. Check/Set flag
+    if cooldownData[2] == true then return end -- Already on cooldown
+    cooldownData[2] = true
+
+    -- 2. Reset the flag after the duration
+    local cooldownTime = cooldownData[1]
+    task.delay(cooldownTime, function()
+        cooldownData[2] = false
+    end)
+    
+    -- 3. Find the UI button
+    local toolButton = self:FindToolButton(toolName)
+    if not toolButton then
+        return
+    end
+    
+    -- 4. Create the overlay
+    local CooldownOverlay = Instance.new("Frame")
+    CooldownOverlay.Name = "CooldownOverlay"
+    CooldownOverlay.Position = UDim2.new(0.5, 0, 1, 0)
+    CooldownOverlay.Size = UDim2.new(1, 0, 1, 0)
+    CooldownOverlay.BackgroundColor3 = Color3.new(0, 0, 0) -- Darker for better visibility
+    CooldownOverlay.BackgroundTransparency = 0.5
+    CooldownOverlay.BorderColor3 = Color3.new(0, 0, 0)
+    CooldownOverlay.BorderSizePixel = 0
+    CooldownOverlay.AnchorPoint = Vector2.new(0.5, 1)
+    CooldownOverlay.ZIndex = 5 -- Make sure it's on top
+    CooldownOverlay.Parent = toolButton
+    
+    -- 5. Animate the overlay
+    local tweenInfo = TweenInfo.new(cooldownTime, Enum.EasingStyle.Linear)
+    local goal = {Size = UDim2.new(1, 0, 0, 0)}
+    
+    local tween = TweenService:Create(CooldownOverlay, tweenInfo, goal)
+    tween:Play()
+    
+    -- 6. After the tween finishes, destroy the overlay
+    tween.Completed:Wait()
+    CooldownOverlay:Destroy()
+end
+
+-- === Core Detection Logic ===
+function CooldownIndicator:OnCharacterAdded(character)
+    -- Reset all cooldowns on respawn
+    for _, data in pairs(cooldowns) do
+        data[2] = false
+    end
+    
+    -- Clear previous char connections
+    for _, conn in ipairs(self._charConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    self._charConnections = {}
+
+    local equippedMeleeTool = nil
+    local clickConnection = nil
+
+    local function disconnectClick()
+        if clickConnection then
+            clickConnection:Disconnect()
+            clickConnection = nil
+        end
+    end
+
+    -- Listen for when a tool is equipped
+    table.insert(self._charConnections, character.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") and cooldowns[child.Name] then
+            equippedMeleeTool = child
+            
+            -- Disconnect previous listener if one exists
+            disconnectClick()
+            
+            -- This is the "trap"
+            -- Now we listen for a left-click
+            clickConnection = self.mouse.Button1Down:Connect(function()
+                -- Check if the tool is off cooldown
+                if equippedMeleeTool and cooldowns[equippedMeleeTool.Name] and cooldowns[equippedMeleeTool.Name][2] == false then
+                    -- Tool was used! Trigger the cooldown.
+                    self:TriggerCooldown(equippedMeleeTool.Name)
+                end
+            end)
+            table.insert(self._charConnections, clickConnection) -- Store new
+        end
+    end))
+
+    -- Listen for when a tool is unequipped
+    table.insert(self._charConnections, character.ChildRemoved:Connect(function(child)
+        if child == equippedMeleeTool then
+            -- Tool was unequipped, "disarm the trap"
+            equippedMeleeTool = nil
+            disconnectClick()
+        end
+    end))
+end
+
+function CooldownIndicator:enable()
+    if self.enabled then return end -- Already enabled
+    
+    -- NEW: Re-check for UI elements if they were missing during .new()
+    if not self.mainFrame or not self.backpackFrame then
+        self.backpackGui = self.playerGui:FindFirstChild("BackpackGui")
+        self.mainFrame = self.backpackGui and self.backpackGui:FindFirstChild("MainFrame")
+        self.backpackFrame = self.backpackGui and self.backpackGui:FindFirstChild("BackpackFrame")
+        if self.backpackFrame then
+            self.backpackFrame = self.backpackFrame:FindFirstChild("ScrollingFrame")
+        end
+        
+        if not self.mainFrame or not self.backpackFrame then
+             -- Still not found, warn and exit
+            warn("[CooldownIndicator] Backpack UI not found on enable. Module will not function.")
+            return 
+        end
+    end
+    -- END NEW
+
+    self.enabled = true
+    print("[CooldownIndicator] Enabled")
+    
+    if self.localPlayer.Character then
+        self:OnCharacterAdded(self.localPlayer.Character)
+    end
+    
+    local charAddedConn = self.localPlayer.CharacterAdded:Connect(function(char)
+        self:OnCharacterAdded(char)
+    end)
+    self._connections["CharacterAdded"] = charAddedConn
+end
+
+function CooldownIndicator:disable()
+    if not self.enabled then return end
+    self.enabled = false
+    print("[CooldownIndicator] Disabled")
+    
+    -- Disconnect global listener
+    if self._connections["CharacterAdded"] then
+        self._connections["CharacterAdded"]:Disconnect()
+        self._connections["CharacterAdded"] = nil
+    end
+    
+    -- Disconnect character-specific listeners
+    for _, conn in ipairs(self._charConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    self._charConnections = {}
+
+    -- Reset cooldown states
+    for _, data in pairs(cooldowns) do
+        data[2] = false
+    end
+end
+
+function CooldownIndicator:destroy()
+    self:disable()
+    -- Clear references
+    self.playerGui = nil
+    self.localPlayer = nil
+    self.mouse = nil
+    self.mainFrame = nil
+    self.backpackFrame = nil
+end
+
+return CooldownIndicator
+

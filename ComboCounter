@@ -1,0 +1,190 @@
+-- ComboCounter Module based on PuppyAdmin logic
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local ComboCounter = {}
+ComboCounter.__index = ComboCounter
+
+function ComboCounter.new(playerGui)
+    local self = setmetatable({}, ComboCounter)
+    self.playerGui = playerGui
+    self.enabled = false
+    self.comboCounterLabel = nil
+    self.comboCounterConnection = nil
+    self.lastComboValue = 0
+    self._connections = {}
+
+    -- Initialize immediately but keep disabled
+    local player = Players.LocalPlayer
+    local char = player and player.Character
+    if char then
+        self:_initializeComboCounter(char)
+    end
+     -- Listen for future character spawns
+    self._connections.CharacterAdded = player.CharacterAdded:Connect(function(newChar)
+        self:_initializeComboCounter(newChar)
+    end)
+
+    return self
+end
+
+-- Helper: Safecall wrapper
+local function safeCall(func, ...)
+	local success, result = pcall(func, ...)
+	if not success then
+		local trace = debug.traceback()
+		warn("ComboCounter Error:", result, "\nStack Trace:\n" .. trace)
+	end
+	return success, result
+end
+
+-- Animation Logic
+function ComboCounter:_animateComboCounter()
+	if not self.comboCounterLabel then return end
+	
+	safeCall(function()
+        local tweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local tweenScaleUp = TweenService:Create(self.comboCounterLabel, tweenInfo, { TextSize = 24 })
+        local tweenScaleDown = TweenService:Create(self.comboCounterLabel, tweenInfo, { TextSize = 20 })
+        
+        tweenScaleUp:Play()
+        tweenScaleUp.Completed:Wait()
+        tweenScaleDown:Play()
+    end)
+end
+
+-- Initialization Logic
+function ComboCounter:_initializeComboCounter(currentChar)
+	safeCall(function()
+		-- Disconnect previous listener if exists
+		if self.comboCounterConnection then
+			self.comboCounterConnection:Disconnect()
+			self.comboCounterConnection = nil
+		end
+		
+		-- Destroy old label if exists
+		if self.comboCounterLabel and self.comboCounterLabel.Parent then
+			self.comboCounterLabel:Destroy()
+			self.comboCounterLabel = nil
+		end
+		
+		-- Find the target UI elements
+		local statGui = self.playerGui:WaitForChild("StatGui", 5)
+		if not statGui then warn("StatGui not found for Combo Counter"); return end
+		local container = statGui:WaitForChild("Container", 5) 
+		if not container then warn("StatGui.Container not found for Combo Counter"); return end
+		
+		-- Find or create the Combo value instance in the character
+		local comboValue = currentChar:FindFirstChild("Combo")
+		
+        -- NEW: Wait for Combo value if it doesn't exist yet
+        if not comboValue then
+            -- Disconnect previous waiter if any
+            if self._connections["WaitingForCombo"] then
+                self._connections["WaitingForCombo"]:Disconnect()
+                self._connections["WaitingForCombo"] = nil
+            end
+            
+            local conn = currentChar.ChildAdded:Connect(function(child)
+                if child.Name == "Combo" and child:IsA("ValueBase") then
+                    -- Found it, now re-run initialization
+                    if self._connections["WaitingForCombo"] then
+                        self._connections["WaitingForCombo"]:Disconnect()
+                        self._connections["WaitingForCombo"] = nil
+                    end
+                    self:_initializeComboCounter(currentChar) -- Re-call
+                end
+            end)
+            self._connections["WaitingForCombo"] = conn -- Store to disconnect
+            warn("Combo value not found, waiting...")
+            return -- Stop execution for now
+        end
+        -- End NEW
+		
+		if not comboValue:IsA("ValueBase") then
+			warn("Character.Combo is not a ValueInstance. Combo Counter disabled.")
+			return
+		end
+		
+		-- Create the ComboCounter TextLabel
+		self.comboCounterLabel = Instance.new("TextLabel")
+		self.comboCounterLabel.Active = false
+		self.comboCounterLabel.AnchorPoint = Vector2.new(0, 1)
+		self.comboCounterLabel.Archivable = true
+		self.comboCounterLabel.AutoLocalize = true
+		self.comboCounterLabel.BackgroundColor3 = Color3.new(1, 1, 1)
+		self.comboCounterLabel.BackgroundTransparency = 1
+		self.comboCounterLabel.BorderColor3 = Color3.new(0.105882, 0.164706, 0.207843)
+		self.comboCounterLabel.BorderSizePixel = 1
+		self.comboCounterLabel.ClipsDescendants = false
+		self.comboCounterLabel.Font = Enum.Font.Antique -- Consistent font
+		self.comboCounterLabel.LayoutOrder = 0
+		self.comboCounterLabel.LineHeight = 1
+		self.comboCounterLabel.Name = "ComboCounter"
+		self.comboCounterLabel.NextSelectionDown = nil
+		self.comboCounterLabel.NextSelectionLeft = nil
+		self.comboCounterLabel.NextSelectionRight = nil
+		self.comboCounterLabel.NextSelectionUp = nil
+		self.comboCounterLabel.Parent = container 
+		self.comboCounterLabel.Position = UDim2.new(1.0375, 3, 1.65, -26) 
+		self.comboCounterLabel.RootLocalizationTable = nil
+		self.comboCounterLabel.Rotation = 0
+		self.comboCounterLabel.Selectable = false
+		self.comboCounterLabel.SelectionImageObject = nil
+		self.comboCounterLabel.Size = UDim2.new(0.239135131, -32, 0, 20)
+		self.comboCounterLabel.SizeConstraint = Enum.SizeConstraint.RelativeXY
+		self.comboCounterLabel.Text = "Combo: 0" -- Initial text
+		self.comboCounterLabel.TextColor3 = Color3.new(1, 1, 1)
+		self.comboCounterLabel.TextScaled = false
+		self.comboCounterLabel.TextSize = 20
+		self.comboCounterLabel.TextStrokeColor3 = Color3.new(0.439216, 0.372549, 0.262745)
+		self.comboCounterLabel.TextStrokeTransparency = 0
+		self.comboCounterLabel.TextTransparency = 0
+		self.comboCounterLabel.TextTruncate = Enum.TextTruncate.None
+		self.comboCounterLabel.TextWrapped = false
+		self.comboCounterLabel.TextXAlignment = Enum.TextXAlignment.Left
+		self.comboCounterLabel.TextYAlignment = Enum.TextYAlignment.Center
+		self.comboCounterLabel.Visible = self.enabled -- Set initial visibility based on module state
+		self.comboCounterLabel.ZIndex = 4
+		
+		-- Set initial value and connect listener
+		self.lastComboValue = comboValue.Value
+		self.comboCounterLabel.Text = "Combo: " .. self.lastComboValue
+		
+		self.comboCounterConnection = comboValue.Changed:Connect(function(newValue)
+			if self.comboCounterLabel then
+				self.comboCounterLabel.Text = "Combo: " .. newValue
+				self:_animateComboCounter()
+				self.lastComboValue = newValue
+			end
+		end)
+	end)
+end
+
+-- Enable/Disable Logic
+function ComboCounter:enable()
+    if self.enabled then return end
+    self.enabled = true
+    if self.comboCounterLabel then self.comboCounterLabel.Visible = true end
+end
+
+function ComboCounter:disable()
+    if not self.enabled then return end
+    self.enabled = false
+    if self.comboCounterLabel then self.comboCounterLabel.Visible = false end
+end
+
+-- Cleanup
+function ComboCounter:destroy()
+    self:disable() -- Ensure label is hidden
+    if self.comboCounterConnection then self.comboCounterConnection:Disconnect() end
+    if self._connections.CharacterAdded then self._connections.CharacterAdded:Disconnect() end
+    if self._connections["WaitingForCombo"] then self._connections["WaitingForCombo"]:Disconnect() end -- NEW
+    if self.comboCounterLabel then self.comboCounterLabel:Destroy() end
+    -- Clear references
+    self.comboCounterLabel = nil
+    self.comboCounterConnection = nil
+    self._connections = {}
+end
+
+return ComboCounter

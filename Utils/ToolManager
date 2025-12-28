@@ -1,0 +1,79 @@
+-- ToolManager Module
+-- Handles all tool-related operations
+
+local ToolManager = {}
+ToolManager.__index = ToolManager
+
+--// Function: ToolManager.new
+--// Description: Creates a new ToolManager instance.
+function ToolManager.new()
+    local self = setmetatable({}, ToolManager)
+    return self
+end
+
+--// Function: ToolManager:getPlayerTools
+--// Description: Gets all tools from player's character and backpack
+function ToolManager:getPlayerTools(player)
+    if not player then return {} end
+    
+    local tools = {}
+    local character = player.Character
+    local backpack = player.Backpack
+    
+    -- Get tools from character (equipped)
+    if character then
+        for _, tool in pairs(character:GetChildren()) do
+            if tool:IsA("Tool") then
+                table.insert(tools, {
+                    name = tool.Name,
+                    location = "Equipped",
+                    tool = tool
+                })
+            end
+        end
+    end
+    
+    -- Get tools from backpack
+    if backpack then
+        for _, tool in pairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                table.insert(tools, {
+                    name = tool.Name,
+                    location = "Backpack",
+                    tool = tool
+                })
+            end
+        end
+    end
+    
+    return tools
+end
+
+function ToolManager:getToolDetails(tool)
+    if not tool or not tool:IsA("Tool") then return nil end
+
+    -- Propriedades básicas do Tool
+    local details = {
+        name = tool.Name,
+        className = tool.ClassName,
+        parent = tool.Parent and tool.Parent.Name or nil,
+        grip = tool.Grip,
+        requiresHandle = tool.RequiresHandle,
+        canBeDropped = tool.CanBeDropped,
+        enabled = tool.Enabled,
+        toolTip = tool.ToolTip,
+        children = {}
+    }
+
+    -- Lista os filhos do Tool (nome e tipo)
+    for _, child in ipairs(tool:GetChildren()) do
+        table.insert(details.children, {
+            name = child.Name,
+            className = child.ClassName
+        })
+    end
+
+    return details
+end
+
+return ToolManager 

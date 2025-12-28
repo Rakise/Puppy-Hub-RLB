@@ -1,0 +1,29 @@
+-- URL do Módulo
+local SUPER_LEADERBOARD_URL = "https://raw.githubusercontent.com/Rakise/Puppy-Hub-RLB/refs/heads/main/CustomLBModule"
+
+-- Função para carregar o módulo usando game:HttpGet e loadstring
+local function loadSuperLeaderboard()
+    local success, result = pcall(function()
+        -- Faz a requisição HTTP para obter o código do módulo
+        return game:HttpGet(SUPER_LEADERBOARD_URL)
+    end)
+
+    if success then
+        -- Converte o código carregado em uma função executável
+        local moduleFunction, loadError = loadstring(result)
+        if not moduleFunction then
+            error("Erro ao carregar o módulo: " .. (loadError or "Erro desconhecido"))
+        end
+
+        -- Retorna o módulo carregado
+        return moduleFunction()
+    else
+        error("Erro ao baixar o módulo: " .. (result or "Erro desconhecido"))
+    end
+end
+
+-- Carregar o SuperLeaderboardModule
+local SuperLeaderboardModule = loadSuperLeaderboard()
+
+-- Instanciar o SuperLeaderboard
+local leaderboard = SuperLeaderboardModule.new()

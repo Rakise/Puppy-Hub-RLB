@@ -1,0 +1,397 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService") -- Added UserInputService
+
+local LIVE_FOLDER = Workspace:WaitForChild("Live")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse() -- Still useful for tool logic, though not for aiming
+
+-- Removed all RemoteFunction logic
+
+local AutoAim = {}
+AutoAim.__index = AutoAim
+
+local cos, deg, acos, random = math.cos, math.deg, math.acos, math.random
+local Vector3new, Vector2new = Vector3.new, Vector2.new
+
+function AutoAim.new()
+    return setmetatable({
+        enabled = false,
+        maxRange = 200,
+        timeToHit = 0.15,
+        toolNames = {}, 
+        studsBehindMin = 20,
+        studsBehindMax = 30,
+        fovMax = 20,
+        
+        mouseSensitivity = 5, -- Lower = faster aiming, Higher = smoother
+        
+        targetHistory = {}, 
+        historyMaxSize = 10,
+        
+        lockedTarget = nil, -- The target we are currently locked onto
+        isLockOnHeld = false, -- Is MouseButton3 down?
+        
+        _cleanupConnection = nil,
+        _renderStepConnection = nil,
+        _inputBeganConnection = nil,
+        _inputEndedConnection = nil
+    }, AutoAim)
+end
+
+function AutoAim:setRange(range) self.maxRange = range end
+function AutoAim:setTimeToHit(time) self.timeToHit = time end
+function AutoAim:setFOV(fov) self.fovMax = fov end
+function AutoAim:setStudsBehindRange(min, max) self.studsBehindMin, self.studsBehindMax = min, max end
+function AutoAim:setMouseSensitivity(sensitivity) self.mouseSensitivity = math.max(1, sensitivity) end
+
+--// Function: AutoAim:updateTargetHistory
+--// Description: Updates the movement history for a specific target
+function AutoAim:updateTargetHistory(target)
+    if not target or not target.Parent then return end 
+
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local currentTime = tick()
+    local currentPos = hrp.Position
+    local currentVel = hrp.Velocity
+
+    if not self.targetHistory[target] then
+        self.targetHistory[target] = {}
+    end
+    local history = self.targetHistory[target]
+
+    table.insert(history, { time = currentTime, position = currentPos, velocity = currentVel })
+
+    while #history > self.historyMaxSize do
+        table.remove(history, 1)
+    end
+end
+
+--// Function: AutoAim:calculateMovementPrediction (Simplified)
+--// Description: Calculates where the target will be based on simple velocity
+function AutoAim:calculateMovementPrediction(target, predictionTime)
+    if not target then return Vector3.new(0, 0, 0) end
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local predictedPos = hrp.Position + hrp.Velocity * predictionTime
+        -- print("[AutoAim] Prediction:", predictedPos)
+        return predictedPos
+    end
+    return Vector3.new(0, 0, 0) -- Fallback
+end
+
+
+--// Function: AutoAim:cleanupTargetHistory
+--// Description: Removes history for targets that no longer exist
+function AutoAim:cleanupTargetHistory()
+    local currentTime = tick()
+    local cleanupCount = 0
+    for target, history in pairs(self.targetHistory) do
+        if not target.Parent or (history[#history] and currentTime - history[#history].time > 10) then 
+            self.targetHistory[target] = nil
+            cleanupCount = cleanupCount + 1
+        end
+    end
+end
+
+--// Function: AutoAim:setTools
+function AutoAim:setTools(toolTable)
+    if type(toolTable) == "table" then
+        print("[AutoAim] Setting tools:", toolTable) 
+        local hash = {}
+        if toolTable[1] or #toolTable == 0 then
+            for i = 1, #toolTable do hash[toolTable[i]] = true end
+        else 
+             hash = toolTable 
+        end
+        self.toolNames = hash
+        print("[AutoAim] Tool names hash:", self.toolNames)
+    end
+end
+
+
+--// Function: AutoAim:GetClosestPlayer
+--// Description: Finds the best player target within FOV and range (Replaced getBestNPC)
+function AutoAim:GetClosestPlayer(localChar)
+    local hrp = localChar:FindFirstChild("HumanoidRootPart")
+    if not hrp then print("[AutoAim Error] Local HRP not found"); return nil end
+
+    local camera = Workspace.CurrentCamera
+    if not camera then print("[AutoAim Error] Camera not found"); return nil end
+
+    -- Use UserInputService for consistent mouse position
+    local mousePos = UserInputService:GetMouseLocation()
+    local mouseRay = camera:ScreenPointToRay(mousePos.X, mousePos.Y)
+    local mouseDir = mouseRay.Direction
+    local camPos = camera.CFrame.Position
+    local fovMaxRad = math.rad(self.fovMax) 
+
+    local closestPlayerChar, closestDist = nil, math.huge 
+    
+    -- Setup RaycastParams for visibility check
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.IgnoreWater = true
+    
+    local players = Players:GetPlayers()
+    print("[AutoAim Debug] Checking " .. #players .. " players.")
+
+    for i = 1, #players do
+        local player = players[i]
+        local character = player.Character
+        
+        -- Basic checks
+        if player ~= LocalPlayer and character then
+            local targetHrp = character:FindFirstChild("HumanoidRootPart")
+            local targetHead = character:FindFirstChild("Head") 
+
+            if targetHrp and targetHead and not character:FindFirstChild("Knocked") then
+                -- print("[AutoAim Debug] Checking valid player: " .. player.Name) -- This is a bit spammy, enable if needed
+                local targetPos = targetHrp.Position
+                
+                -- 1. Range Check (3D distance)
+                local dist3D = (targetPos - hrp.Position).Magnitude
+                if dist3D <= self.maxRange then
+                    
+                    -- 2. FOV Check (Angle)
+                    local npcDir = (targetPos - camPos).Unit
+                    local dotProduct = mouseDir:Dot(npcDir)
+
+                    if dotProduct > 0 and dotProduct <= 1 then -- Target is in front
+                        local angleRad = acos(dotProduct)
+
+                        if angleRad <= fovMaxRad then
+                            
+                            -- 3. Visibility Check (Raycast)
+                            local targetHeadPos = targetHead.Position
+                            local rayDirection = targetHeadPos - camPos
+                            raycastParams.FilterDescendantsInstances = {localChar, character} 
+                            
+                            local rayResult = Workspace:Raycast(camPos, rayDirection, raycastParams)
+
+                            if not rayResult then 
+                                -- 4. Screen Distance Check (User's logic)
+                                local vector, onScreen = camera:WorldToViewportPoint(targetHrp.Position)
+                                if onScreen then
+                                    local screenDistance = (mousePos - Vector2.new(vector.X, vector.Y)).Magnitude
+                                    
+                                    print("[AutoAim Debug] Player " .. player.Name .. " is a valid target. Screen distance: " .. screenDistance)
+                                    
+                                    if screenDistance < closestDist then
+                                        closestDist = screenDistance
+                                        closestPlayerChar = character -- Return the Character model
+                                    end
+                                -- else
+                                    -- print("[AutoAim Debug] Player " .. player.Name .. " is visible but not on screen?")
+                                end
+                            -- else
+                                -- print("[AutoAim Debug] Player " .. player.Name .. " is obstructed by: " .. (rayResult and rayResult.Instance.Name or "nil"))
+                            end
+                        -- else
+                            -- print("[AutoAim Debug] Player " .. player.Name .. " is outside FOV.")
+                        end
+                    -- else
+                        -- print("[AutoAim Debug] Player " .. player.Name .. " is behind camera.")
+                    end
+                -- else
+                    -- print("[AutoAim Debug] Player " .. player.Name .. " is out of range (" .. dist3D .. " > " .. self.maxRange .. ")")
+                end
+            -- else
+                -- if player ~= LocalPlayer then
+                    -- print("[AutoAim Debug] Skipping player: " .. player.Name .. " (No HRP, Head, or is Knocked)")
+                -- end
+            end
+        end
+    end
+
+    if closestPlayerChar then 
+        print("[AutoAim] Target found:", closestPlayerChar.Name) 
+    else
+        print("[AutoAim] No valid target found in FOV/Range/Visible.")
+    end
+    return closestPlayerChar -- Return the character model
+end
+
+--// Function: AutoAim:OnInputBegan
+--// Description: Handles key presses
+function AutoAim:OnInputBegan(input, gameProcessed)
+    if gameProcessed then return end -- Don't aim if typing in chat, etc.
+    
+    if input.KeyCode == Enum.KeyCode.E then
+        print("[AutoAim Debug] 'E' Key PRESSED. isLockOnHeld = true") -- NEW DEBUG
+        self.isLockOnHeld = true
+        -- We will find the target in the RenderStep loop
+    end
+end
+
+--// Function: AutoAim:OnInputEnded
+--// Description: Handles key releases
+function AutoAim:OnInputEnded(input)
+    if input.KeyCode == Enum.KeyCode.E then
+        self.isLockOnHeld = false
+        self.lockedTarget = nil -- Release the lock
+        print("[AutoAim] Lock released.")
+    end
+end
+
+--// Function: AutoAim:OnRenderStep
+--// Description: The main aiming loop
+function AutoAim:OnRenderStep()
+    if not self.enabled or not mousemoverel then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local equippedTool = character:FindFirstChildOfClass("Tool")
+
+    -- Check if we have a valid tool equipped
+    if not equippedTool then
+        if self.lockedTarget then
+            print("[AutoAim] Tool unequipped, lock released.")
+        end
+        self.lockedTarget = nil -- Release lock if we switch tools
+        
+        -- NEW DEBUGGING
+        if self.isLockOnHeld then -- Only print if we are trying to aim
+            if equippedTool then
+                print("[AutoAim Debug] Tool check FAILED. Equipped: '" .. equippedTool.Name .. "'. Is in table? " .. tostring(self.toolNames[equippedTool.Name]))
+            else
+                print("[AutoAim Debug] Tool check FAILED. No tool equipped.")
+            end
+        end
+        -- END NEW DEBUGGING
+        
+        return
+    end
+    
+    -- NEW DEBUGGING
+    if self.isLockOnHeld then
+        print("[AutoAim Debug] Tool check OK. isLockOnHeld: " .. tostring(self.isLockOnHeld))
+    end
+    -- END NEW DEBUGGING
+    
+    -- Check if we are holding the lock-on button
+    if self.isLockOnHeld then
+        local camera = Workspace.CurrentCamera
+        if not camera then return end
+        
+        -- If we don't have a target, find one
+        if not self.lockedTarget then
+            self.lockedTarget = self:GetClosestPlayer(character) -- Changed from getBestNPC
+            if self.lockedTarget and self.lockedTarget.Parent then -- *** MODIFIED LINE ***
+                print("[AutoAim] Target locked:", self.lockedTarget.Name) -- *** THIS WAS THE ERROR LINE ***
+            end
+        end
+        
+        -- If we have a valid target, aim at it
+        if self.lockedTarget then
+            -- Validate the target is still good
+            local npcHRP = self.lockedTarget:FindFirstChild("HumanoidRootPart")
+            if not npcHRP or not self.lockedTarget.Parent or self.lockedTarget:FindFirstChild("Knocked") then
+                print("[AutoAim] Locked target became invalid. Releasing.")
+                self.lockedTarget = nil
+                return
+            end
+            
+            -- Update and predict target's position
+            self:updateTargetHistory(self.lockedTarget)
+            local hitPosition = self:calculateMovementPrediction(self.lockedTarget, self.timeToHit)
+
+            -- Apply Studs Behind logic
+            if equippedTool.Name == "Percutiens" then
+                local charHRP = character:FindFirstChild("HumanoidRootPart")
+                if charHRP then
+                    local directionToTarget = (npcHRP.Position - charHRP.Position).Unit
+                    hitPosition = hitPosition + directionToTarget * random(self.studsBehindMin, self.studsBehindMax)
+                end
+            end
+            
+            -- Convert 3D world space to 2D screen space
+            local targetScreenPos, onScreen = camera:WorldToViewportPoint(hitPosition)
+            
+            -- If target is no longer on screen, release lock
+            if not onScreen then
+                print("[AutoAim] Target left screen. Releasing.")
+                self.lockedTarget = nil
+                return
+            end
+
+            -- Get current mouse position
+            local mousePos = UserInputService:GetMouseLocation()
+            
+            -- Calculate the difference (delta)
+            local deltaX = (targetScreenPos.X - mousePos.X) / self.mouseSensitivity
+            local deltaY = (targetScreenPos.Y - mousePos.Y) / self.mouseSensitivity
+            
+            -- Move the mouse
+            mousemoverel(deltaX, deltaY)
+
+        end
+    else
+        -- This is handled by OnInputEnded, but as a fallback
+        if self.lockedTarget then
+            self.lockedTarget = nil
+        end
+    end
+end
+
+
+function AutoAim:enable()
+    if self.enabled then return end
+    
+    if not mousemoverel then
+        warn("[AutoEim] 'mousemoverel' function not found. Cannot enable.")
+        return
+    end
+    
+    self.enabled = true
+    print("[AutoAim] Enabled. Hold E to lock on.")
+
+    -- Start periodic cleanup of target history
+    self._cleanupConnection = RunService.Heartbeat:Connect(function()
+        self:cleanupTargetHistory()
+    end)
+    
+    -- Connect RenderStep and Input listeners
+    self._renderStepConnection = RunService.RenderStepped:Connect(function() self:OnRenderStep() end)
+    self._inputBeganConnection = UserInputService.InputBegan:Connect(function(input, gp) self:OnInputBegan(input, gp) end)
+    self._inputEndedConnection = UserInputService.InputEnded:Connect(function(input) self:OnInputEnded(input) end)
+
+end
+
+function AutoAim:disable()
+    if not self.enabled then return end
+    self.enabled = false
+    print("[AutoAim] Disabled.")
+    
+    -- Disconnect all connections
+    if self._cleanupConnection then
+        self._cleanupConnection:Disconnect()
+        self._cleanupConnection = nil
+    end
+    if self._renderStepConnection then
+        self._renderStepConnection:Disconnect()
+        self._renderStepConnection = nil
+    end
+    if self._inputBeganConnection then
+        self._inputBeganConnection:Disconnect()
+        self._inputBeganConnection = nil
+    end
+    if self._inputEndedConnection then
+        self._inputEndedConnection:Disconnect()
+        self._inputEndedConnection = nil
+    end
+
+    -- Clear history and target
+    self.targetHistory = {}
+    self.lockedTarget = nil
+    self.isLockOnHeld = false
+    
+end
+
+return AutoAim

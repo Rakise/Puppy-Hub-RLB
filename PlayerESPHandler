@@ -1,0 +1,371 @@
+-- PlayerESP Otimizado para Performance Máxima
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local Utils = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub-RLB/refs/heads/main/UtilsService"))()
+local utils = Utils.new()
+local ConnectionManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub-RLB/refs/heads/main/ConnectionManager"))()
+
+-- Cache global
+local LocalPlayer = Players.LocalPlayer
+local floor = math.floor
+local format = string.format
+local tick = tick
+local pairs = pairs
+local ipairs = ipairs
+local newInstance = Instance.new
+
+-- Constantes
+local UPDATE_INTERVAL = 0.5 
+
+-- UPDATED: Class Identification using Ability Names directly
+-- Maps Ability Name -> Class Display Name
+local UltraAbilities = {
+    ["Lightning Drop"] = "Dragon Sage",
+    ["Axe Kick"] = "Oni",
+    ["Observe"] = "Illusionist",
+    ["Perflora"] = "Druid",
+    ["Secare"] = "Necromancer",
+    ["Elegant Slash"] = "Whisperer",
+    ["Joyous Dance"] = "Bard",
+    ["Grapple"] = "Shinobi",
+    ["Shadow Fan"] = "Faceless",
+    ["Dragon Awakening"] = "Dragon Slayer",
+    ["Chain Pull"] = "Deep Knight",
+    ["Hyper Body"] = "Sigil Knight Commander",
+    ["Dark Eruption"] = "Dark Sigil",
+    ["Hammer"] = "Lapidarist",
+    ["Katana"] = "Ronin",
+    ["Abyssal Scream"] = "Abysswalker",
+    ["Puncture"] = "Vanguard"
+}
+
+-- Fallback color if class isn't strictly defined in a color table, we can generate one or use white
+local CLASS_COLORS = {
+    ["Dragon Sage"] = "#55FFFF",
+    ["Oni"] = "#FF5555",
+    ["Illusionist"] = "#AA55FF",
+    ["Druid"] = "#55FF55",
+    ["Necromancer"] = "#AA0000",
+    ["Whisperer"] = "#AAAAAA",
+    ["Bard"] = "#FFFF55",
+    ["Shinobi"] = "#FFAA00",
+    ["Faceless"] = "#FF55FF",
+    ["Dragon Slayer"] = "#FF0000",
+    ["Deep Knight"] = "#0055AA",
+    ["Sigil Knight Commander"] = "#FF7F00",
+    ["Dark Sigil"] = "#55557F",
+    ["Lapidarist"] = "#FFAA7F",
+    ["Ronin"] = "#FFFFFF",
+    ["Abysswalker"] = "#2A0055",
+    ["Vanguard"] = "#CCCCCC",
+    ["FRESH"] = "#FFFFFF"
+}
+
+local OBSERVE_COLOR_HEX = "#55FFFF"
+
+-- UPDATED: Function to get player class based on abilities in backpack/character
+local function getPlayerClass(targetPlayer)
+    local backpack = targetPlayer:FindFirstChildOfClass("Backpack")
+	local characterModel = targetPlayer.Character
+    
+    if not backpack and not characterModel then return "FRESH" end
+
+    -- Check for any of the ultra abilities
+    -- This scan might be slightly heavier than checking specific tools, but it's what was requested
+    -- Optimization: Check Character (Equipped) first, then Backpack
+    
+    local foundClass = nil
+    
+    local function checkContainer(container)
+        if not container then return nil end
+        for _, item in ipairs(container:GetChildren()) do
+            if item:IsA("Tool") and UltraAbilities[item.Name] then
+                return UltraAbilities[item.Name]
+            end
+        end
+        return nil
+    end
+
+    foundClass = checkContainer(characterModel)
+    if not foundClass then
+        foundClass = checkContainer(backpack)
+    end
+
+	return foundClass or "FRESH"
+end
+
+local function hasObserveTool(targetPlayer)
+    local backpack = targetPlayer:FindFirstChildOfClass("Backpack")
+    local characterModel = targetPlayer.Character
+    local hasInBackpack = backpack and backpack:FindFirstChild("Observe")
+    local hasEquipped = characterModel and characterModel:FindFirstChild("Observe")
+    return hasInBackpack or hasEquipped
+end
+
+local function getBestAdornee(character)
+    return character:FindFirstChild("Head") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChildWhichIsA("BasePart")
+end
+
+-- Configuração dos frames
+local FRAME_CONFIG = {
+    {
+        name = "nameFrame",
+        layout = { fillDirection = Enum.FillDirection.Horizontal, horizontalAlignment = Enum.HorizontalAlignment.Center, verticalAlignment = Enum.VerticalAlignment.Center },
+        labels = {
+            { name = "nameLabel", key = "playerName", format = "%s", dataKey = "name", showByDefault = true, getData = function(player, cache) return player.Name end },
+            { name = "distanceLabel", key = "distance", format = "[%s]", dataKey = "distance", showByDefault = true, getData = function(player, cache, localChar, targetChar)
+                    if localChar and targetChar then
+                        local localRoot = localChar:FindFirstChild("HumanoidRootPart")
+                        local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+                        if localRoot and targetRoot then return floor((localRoot.Position - targetRoot.Position).Magnitude) .. "m" end
+                    end
+                    return "0m"
+                end } } },
+    {
+        name = "infoFrame",
+        layout = { fillDirection = Enum.FillDirection.Horizontal, horizontalAlignment = Enum.HorizontalAlignment.Center, verticalAlignment = Enum.VerticalAlignment.Center },
+        labels = {
+            { name = "rogueLabel", key = "rogueName", format = "[%s]", dataKey = "rogueName", showByDefault = true, getData = function(player, cache) return utils:getPlayerRogueDisplay(player) end },
+            { name = "edictLabel", key = "edict", format = "[%s]", dataKey = "edict", showByDefault = true, getData = function(player, cache) return utils:getPlayerEdictDisplay(player) end } } },
+    {
+        name = "hpFrame",
+        layout = { fillDirection = Enum.FillDirection.Horizontal, horizontalAlignment = Enum.HorizontalAlignment.Center, verticalAlignment = Enum.VerticalAlignment.Center },
+        labels = {
+            { name = "hpLabel", key = "health", format = "[%s]", dataKey = "healthDisplay", showByDefault = true, getData = function(player, cache) local healthDisplay, _ = utils:getPlayerHealthDisplay(player); return healthDisplay end },
+            { name = "hpPercLabel", key = "healthPercent", format = "[%s]", dataKey = "healthPercentDisplay", showByDefault = true, getData = function(player, cache) local _, healthPercentDisplay = utils:getPlayerHealthDisplay(player); return healthPercentDisplay end } } },
+    {
+        name = "heldItemFrame",
+        layout = { fillDirection = Enum.FillDirection.Horizontal, horizontalAlignment = Enum.HorizontalAlignment.Center, verticalAlignment = Enum.VerticalAlignment.Center },
+        labels = {
+            { name = "heldItemLabel", key = "heldItem", format = "[Holding: %s]", dataKey = "heldItem", showByDefault = true, getData = function(player, cache, localChar, targetChar)
+                    if targetChar then local equippedTool = targetChar:FindFirstChildWhichIsA("Tool"); return equippedTool and equippedTool.Name or "Nothing" end
+                    return "Nothing"
+                end } } }
+}
+
+local PlayerESP = {}
+PlayerESP.__index = PlayerESP
+
+function PlayerESP.new()
+    local self = setmetatable({}, PlayerESP)
+    self.enabled = false
+    self._connMgr = ConnectionManager.new()
+    self._playerConnMgrs = {}
+    self.espBillboards = {}
+    self.dataCache = {}
+    self.displayConfig = {}
+    for i, frameConfig in ipairs(FRAME_CONFIG) do
+        for j, labelConfig in ipairs(frameConfig.labels) do
+            local configKey = "show" .. labelConfig.key:gsub("^%l", string.upper)
+            self.displayConfig[configKey] = labelConfig.showByDefault
+        end
+    end
+    self._lastBillboardUpdate = 0
+    self._localCharCache = nil
+    self._localCharCacheTime = 0
+    return self
+end
+
+function PlayerESP:getLocalCharacter()
+    local currentTime = tick()
+    if currentTime - self._localCharCacheTime > 1 then
+        self._localCharCache = LocalPlayer and LocalPlayer.Character
+        self._localCharCacheTime = currentTime
+    end
+    return self._localCharCache
+end
+
+local function createLabel(text, parent)
+    local label = newInstance("TextLabel")
+    label.FontSize = Enum.FontSize.Size14
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.Text = text
+    label.TextStrokeTransparency = 0.5
+    label.Font = Enum.Font.SourceSansSemibold
+    label.BackgroundTransparency = 1
+    label.TextSize = 14
+    label.Size = UDim2.new(0, 0, 0.1, 0)
+    label.AutomaticSize = Enum.AutomaticSize.X
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.RichText = true
+    label.Parent = parent
+    return label
+end
+
+local function createFrameWithLayout(frameName, layoutConfig, parent)
+    local frame = newInstance("Frame")
+    frame.Name = frameName
+    frame.BackgroundTransparency = 1
+    frame.Size = UDim2.new(1, 0, 0.1, 0)
+    frame.Parent = parent
+    local layout = newInstance("UIListLayout")
+    layout.FillDirection = layoutConfig.fillDirection
+    layout.HorizontalAlignment = layoutConfig.horizontalAlignment
+    layout.VerticalAlignment = layoutConfig.verticalAlignment
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = frame
+    return frame
+end
+
+function PlayerESP:createBillboard(player)
+    local character = player.Character
+    if not character or character:FindFirstChild("PlayerESP") then return end
+    local adornee = getBestAdornee(character)
+    if not adornee then return end
+    local billboard = newInstance("BillboardGui")
+    billboard.Name = "PlayerESP"
+    billboard.LightInfluence = 1
+    billboard.Active = true
+    billboard.Adornee = adornee
+    billboard.ClipsDescendants = true
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.new(0, 500, 0, 100)
+    billboard.Parent = adornee
+    local mainLayout = newInstance("UIListLayout")
+    mainLayout.Padding = UDim.new(0, 3)
+    mainLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    mainLayout.Parent = billboard
+    local billboardData = { billboard = billboard, frames = {}, labels = {} }
+    for i, frameConfig in ipairs(FRAME_CONFIG) do
+        local frame = createFrameWithLayout(frameConfig.name, frameConfig.layout, billboard)
+        frame.LayoutOrder = i
+        billboardData.frames[frameConfig.name] = frame
+        for j, labelConfig in ipairs(frameConfig.labels) do
+            local label = createLabel("", frame)
+            label.LayoutOrder = j
+            billboardData.labels[labelConfig.key] = label
+        end
+    end
+    self.espBillboards[player] = billboardData
+    self.dataCache[player] = { lastUpdate = 0 }
+    self:setDisplayConfig(self.displayConfig)
+    self:updatePlayerData(player)
+end
+
+function PlayerESP:removeBillboard(player)
+    local data = self.espBillboards[player]
+    if data and data.billboard then data.billboard:Destroy(); self.espBillboards[player] = nil end
+    self.dataCache[player] = nil
+end
+
+function PlayerESP:updatePlayerData(player)
+    if not player or not player.Parent then return end
+    local cache = self.dataCache[player]
+    if not cache then return end
+    local data = self.espBillboards[player]
+    if not data then return end
+    
+    local localChar = self:getLocalCharacter()
+    local targetChar = player.Character
+    
+    local playerClass = getPlayerClass(player)
+    local classColor = CLASS_COLORS[playerClass] or "#FFFFFF"
+    
+    local isObserving = hasObserveTool(player)
+    
+    for i, frameConfig in ipairs(FRAME_CONFIG) do
+        for j, labelConfig in ipairs(frameConfig.labels) do
+            local label = data.labels[labelConfig.key]
+            if label and labelConfig.getData then
+                local value = labelConfig.getData(player, cache, localChar, targetChar)
+                
+                local displayColor = isObserving and OBSERVE_COLOR_HEX or classColor
+                
+                if isObserving then
+                    label.TextColor3 = Color3.fromHex(OBSERVE_COLOR_HEX)
+                else
+                    label.TextColor3 = Color3.new(1,1,1)
+                end
+
+                if labelConfig.key == "playerName" then
+                    local nameStr = isObserving and format("<font color='%s'>[%s] %s</font>", displayColor, playerClass, value) or format("<font color='%s'>[%s]</font> %s", displayColor, playerClass, value)
+                    label.Text = nameStr
+                elseif labelConfig.key == "distance" or labelConfig.key == "rogueName" or labelConfig.key == "edict" or labelConfig.key == "health" or labelConfig.key == "healthPercent" or labelConfig.key == "heldItem" then
+                     local str = labelConfig.format:format(value)
+                     label.Text = isObserving and format("<font color='%s'>%s</font>", displayColor, str) or str
+                else
+                    label.Text = labelConfig.format:format(value)
+                end
+            end
+        end
+    end
+end
+
+function PlayerESP:updateBillboards()
+    local currentTime = tick()
+    if currentTime - self._lastBillboardUpdate < UPDATE_INTERVAL then return end
+    self._lastBillboardUpdate = currentTime
+    local toRemove = {}
+    for player, data in pairs(self.espBillboards) do
+        if player and player.Parent and player.Character then self:updatePlayerData(player)
+        else table.insert(toRemove, player) end
+    end
+    for i = 1, #toRemove do self:removeBillboard(toRemove[i]) end
+end
+
+function PlayerESP:connectPlayer(player)
+    if player == LocalPlayer then return end
+    local mgr = self._playerConnMgrs[player]
+    if mgr then mgr:disconnectAll() end
+    mgr = ConnectionManager.new()
+    self._playerConnMgrs[player] = mgr
+    mgr:add(player.CharacterAdded:Connect(function(character) if self.enabled then task.wait(0.1); self:createBillboard(player) end end))
+    mgr:add(player.CharacterRemoving:Connect(function(character) self:removeBillboard(player) end))
+    if player.Character then self:createBillboard(player) end
+end
+
+function PlayerESP:enable()
+    self.enabled = true
+    self:cleanup()
+    local playerList = Players:GetPlayers()
+    for i = 1, #playerList do self:connectPlayer(playerList[i]) end
+    self._connMgr:add(Players.PlayerAdded:Connect(function(player) self:connectPlayer(player) end))
+    self._connMgr:add(Players.PlayerRemoving:Connect(function(player) self:removeBillboard(player); local mgr = self._playerConnMgrs[player]; if mgr then mgr:disconnectAll(); self._playerConnMgrs[player] = nil end end))
+    self._connMgr:add(RunService.Heartbeat:Connect(function() self:updateBillboards() end))
+end
+
+function PlayerESP:disable()
+    self.enabled = false
+    self:cleanup()
+end
+
+function PlayerESP:cleanup()
+    self._connMgr:disconnectAll()
+    for _, mgr in pairs(self._playerConnMgrs) do mgr:disconnectAll() end
+    self._playerConnMgrs = {}
+    for player, _ in pairs(self.espBillboards) do self:removeBillboard(player) end
+    self.dataCache = {}
+    self._localCharCache = nil
+    self._localCharCacheTime = 0
+end
+
+function PlayerESP:setTextSize(size)
+    for _, data in pairs(self.espBillboards) do for _, label in pairs(data.labels) do label.TextSize = size end end
+end
+
+function PlayerESP:setTextColor(color)
+    for _, data in pairs(self.espBillboards) do for key, label in pairs(data.labels) do if key ~= "playerName" then label.TextColor3 = color end end end
+end
+
+function PlayerESP:setDisplayConfig(config)
+    if config then for key, value in pairs(config) do self.displayConfig[key] = value end end
+    for player, billboardData in pairs(self.espBillboards) do
+        if billboardData and billboardData.billboard then
+            local mainBillboard = billboardData.billboard
+            for i, frameConfig in ipairs(FRAME_CONFIG) do
+                local frame = billboardData.frames[frameConfig.name]
+                if frame then
+                    local frameShouldBeVisible = false
+                    for j, labelConfig in ipairs(frameConfig.labels) do
+                        local configKey = "show" .. labelConfig.key:gsub("^%l", string.upper)
+                        if self.displayConfig[configKey] ~= false then frameShouldBeVisible = true; break end
+                    end
+                    frame.Parent = frameShouldBeVisible and mainBillboard or nil
+                end
+            end
+        end
+    end
+end
+
+return PlayerESP

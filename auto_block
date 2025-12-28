@@ -1,0 +1,486 @@
+-- AutoBlock: Updated for Character.Network & Humanoid.Tags
+-- Asset IDs Updated: Spear M2, Grapple
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- External dependency
+local ConnectionManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub/refs/heads/main/ConnectionManager"))()
+
+local DEFAULT_BLOCK_RADIUS = 200
+local LOCAL_PLAYER = Players.LocalPlayer
+local DETECTION_INTERVAL = 0.01 
+local CACHE_DURATION = 0.1
+
+local ConditionType = {
+    ANIMATION = "animation",
+    EQUIPPED_ITEM = "equippedItem",
+    PLAYER_STATE = "playerState",
+    PROXIMITY = "proximity",
+    HEALTH = "health",
+    WALKSPEED = "walkspeed",
+    TAG = "tag", -- Checks Humanoid.Tags
+    FACING = "facing"
+}
+
+local MatchOperator = {
+    AND = "and",
+    OR = "or"
+}
+
+-- UPDATED ASSET IDS & TAGS
+local DEFAULT_SINGLE_THREATS = {
+    ["grapple"] = {
+        name = "Grapple",
+        category = "skills",
+        priority = 1,
+        conditions = {
+            {
+                type = ConditionType.ANIMATION,
+                value = "rbxassetid://125176238205915" -- UPDATED ID
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 200
+    },
+    ["verdien"] = {
+        name = "Verdien",
+        category = "skills",
+        priority = 1,
+        conditions = {
+            {
+                type = ConditionType.TAG,
+                value = "Charge" -- Checks Tags folder
+            },
+            {
+                type = ConditionType.EQUIPPED_ITEM,
+                value = "Verdien"
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 200
+    },
+    ["spear_strikes"] = {
+        name = "Spear Strikes",
+        category = "skills",
+        priority = 1,
+        conditions = {
+            {
+                type = ConditionType.ANIMATION,
+                value = "rbxassetid://128925258376335" -- UPDATED ID
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 15
+    },
+    ["spear_m2"] = {
+        name = "Spear M2",
+        category = "attack_type",
+        priority = 2,
+        conditions = {
+            {
+                type = ConditionType.ANIMATION,
+                value = "rbxassetid://128925258376335" -- UPDATED ID
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 15
+    },
+    ["heavy_attack"] = {
+        name = "Heavy Attack",
+        category = "attack_type",
+        priority = 2,
+        conditions = {
+            {
+                type = ConditionType.TAG, -- Checks Tags folder
+                value = "HeavyAttack"
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 15
+    },
+    ["light_attack"] = {
+        name = "Light Attack",
+        category = "attack_type",
+        priority = 3,
+        conditions = {
+            {
+                type = ConditionType.TAG, -- Checks Tags folder
+                value = "LightAttack"
+            },
+            {
+                type = ConditionType.FACING,
+                angle = 180
+            }
+        },
+        operator = MatchOperator.AND,
+        blockDistance = 15
+    },
+}
+
+local AutoBlock = {}
+AutoBlock.__index = AutoBlock
+
+function AutoBlock.new(blockRadius)
+    local self = setmetatable({}, AutoBlock)
+    
+    self.enabled = false
+    self.blockRadius = blockRadius or DEFAULT_BLOCK_RADIUS
+    self._connectionManager = ConnectionManager.new()
+    self._isCurrentlyBlocking = false
+    self._threatConfigs = {}
+    
+    self._detectionSettings = {
+        enableSingleThreats = true,
+        enableComboThreats = true,
+        priorityThreshold = 0,
+        debugMode = false
+    }
+    
+    self._currentThreats = {}
+    self._playerCache = {}
+    self._validPlayers = {}
+    self._lastPlayerUpdate = 0
+    self._lastDetectionRun = 0
+    
+    self:_initializeDefaultThreats()
+    
+    return self
+end
+
+function AutoBlock:_initializeDefaultThreats()
+    for threatId, config in pairs(DEFAULT_SINGLE_THREATS) do
+        self._threatConfigs[threatId] = config
+    end
+end
+
+function AutoBlock:_updateValidPlayers()
+    local currentTime = tick()
+    if currentTime - self._lastPlayerUpdate < CACHE_DURATION then return end
+    
+    self._lastPlayerUpdate = currentTime
+    local validPlayers = {}
+    local count = 0
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LOCAL_PLAYER and 
+           player.Character and 
+           player.Character:FindFirstChild("HumanoidRootPart") and
+           player.Character:FindFirstChild("Humanoid") then
+            count = count + 1
+            validPlayers[count] = player
+        end
+    end
+    
+    self._validPlayers = validPlayers
+end
+
+function AutoBlock:_getValidatedLocalCharacter()
+    if not LOCAL_PLAYER or not LOCAL_PLAYER.Character then return nil end
+    local character = LOCAL_PLAYER.Character
+    if not character:FindFirstChild("HumanoidRootPart") then return nil end
+    return character
+end
+
+-- UPDATED: Get Network Remote
+function AutoBlock:_getNetworkRemote(character)
+    return character:FindFirstChild("Network")
+end
+
+function AutoBlock:_executeRemoteEvent(remote, actionName)
+    if remote and remote:IsA("RemoteEvent") then
+        remote:FireServer(actionName)
+        return true
+    end
+    return false
+end
+
+function AutoBlock:_getEquippedItem(player)
+    local currentTime = tick()
+    local cacheKey = player.Name .. "_equipped"
+    local cache = self._playerCache[cacheKey]
+    if cache and currentTime - cache.time < CACHE_DURATION then return cache.value end
+    
+    local equippedItem = nil
+    if player.Character then
+        local equippedTool = player.Character:FindFirstChildOfClass("Tool")
+        if equippedTool then equippedItem = equippedTool.Name end
+    end
+    
+    self._playerCache[cacheKey] = { value = equippedItem, time = currentTime }
+    return equippedItem
+end
+
+-- NEW: Checks Humanoid.Tags folder
+function AutoBlock:_hasTag(player, tagName)
+    if not player.Character then return false end
+    local humanoid = player.Character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local tagsFolder = humanoid:FindFirstChild("Tags")
+    if not tagsFolder then return false end
+
+    local cacheKey = player.Name .. "_tag_" .. tagName
+    local currentTime = tick()
+    local cache = self._playerCache[cacheKey]
+    
+    if cache and currentTime - cache.time < CACHE_DURATION then return cache.value end
+    
+    local hasTag = tagsFolder:FindFirstChild(tagName) ~= nil
+    
+    self._playerCache[cacheKey] = { value = hasTag, time = currentTime }
+    return hasTag
+end
+
+function AutoBlock:_getActiveAnimations(player)
+    local currentTime = tick()
+    local cacheKey = player.Name .. "_animations"
+    local cache = self._playerCache[cacheKey]
+    if cache and currentTime - cache.time < CACHE_DURATION then return cache.value end
+    
+    local animations = {}
+    if player.Character and player.Character:FindFirstChild("Humanoid") then
+        local animationTracks = player.Character.Humanoid:GetPlayingAnimationTracks()
+        for _, track in ipairs(animationTracks) do
+            if track.Animation and track.Animation.AnimationId then
+                animations[track.Animation.AnimationId] = true
+            end
+        end
+    end
+    
+    self._playerCache[cacheKey] = { value = animations, time = currentTime }
+    return animations
+end
+
+function AutoBlock:_checkCondition(condition, player, myPosition)
+    local conditionType = condition.type
+    
+    if conditionType == ConditionType.ANIMATION then
+        local activeAnimations = self:_getActiveAnimations(player)
+        return activeAnimations[condition.value] == true
+        
+    elseif conditionType == ConditionType.EQUIPPED_ITEM then
+        local equippedItem = self:_getEquippedItem(player)
+        local conditionValue = condition.value
+        if type(conditionValue) == "table" then
+            for _, item in ipairs(conditionValue) do
+                if equippedItem == item then return true end
+            end
+            return false
+        else
+            return equippedItem == conditionValue
+        end
+        
+    elseif conditionType == ConditionType.TAG or conditionType == "accessory" then -- Handle both for compat
+        return self:_hasTag(player, condition.value)
+        
+    elseif conditionType == ConditionType.PROXIMITY then
+        if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return false end
+        local distance = (myPosition - player.Character.HumanoidRootPart.Position).Magnitude
+        return distance <= condition.value
+        
+    elseif conditionType == ConditionType.FACING then
+        local angle = condition.angle or 45
+        return self:_isFacing(LOCAL_PLAYER, player, angle)
+    end
+    
+    return false
+end
+
+function AutoBlock:_evaluateThreat(threatConfig, player, myPosition)
+    local conditions = threatConfig.conditions
+    if not conditions or #conditions == 0 then return false end
+    
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return false end
+    local distance = (myPosition - player.Character.HumanoidRootPart.Position).Magnitude
+    local maxDistance = threatConfig.blockDistance or self.blockRadius
+    if distance > maxDistance then return false end
+    
+    local operator = threatConfig.operator
+    if operator == MatchOperator.AND then
+        for _, condition in ipairs(conditions) do
+            if not self:_checkCondition(condition, player, myPosition) then return false end
+        end
+        return true
+    else
+        for _, condition in ipairs(conditions) do
+            if self:_checkCondition(condition, player, myPosition) then return true end
+        end
+        return false
+    end
+end
+
+function AutoBlock:_scanPlayerForThreats(player, myPosition)
+    local detectedThreats = {}
+    local threatCount = 0
+    
+    for threatId, threatConfig in pairs(self._threatConfigs) do
+        local isCombo = #threatConfig.conditions > 1
+        if (isCombo and not self._detectionSettings.enableComboThreats) or 
+           (not isCombo and not self._detectionSettings.enableSingleThreats) then
+            continue
+        end
+        
+        if threatConfig.priority < self._detectionSettings.priorityThreshold then continue end
+        
+        if self:_evaluateThreat(threatConfig, player, myPosition) then
+            threatCount = threatCount + 1
+            detectedThreats[threatCount] = {
+                id = threatId,
+                config = threatConfig,
+                player = player.Name,
+                distance = (myPosition - player.Character.HumanoidRootPart.Position).Magnitude,
+                detectedAt = tick()
+            }
+        end
+    end
+    return detectedThreats
+end
+
+function AutoBlock:_getHighestPriorityThreat(allThreats)
+    if #allThreats == 0 then return nil end
+    local highestPriority = 0
+    local priorityThreat = nil
+    for i = 1, #allThreats do
+        local threat = allThreats[i]
+        if threat.config.priority > highestPriority then
+            highestPriority = threat.config.priority
+            priorityThreat = threat
+        end
+    end
+    return priorityThreat
+end
+
+function AutoBlock:_updateBlockingState(threats)
+    local shouldBlock = #threats > 0
+    
+    if shouldBlock and not self._isCurrentlyBlocking then
+        local primaryThreat = self:_getHighestPriorityThreat(threats)
+        self:_activateBlock(primaryThreat, threats)
+    elseif not shouldBlock and self._isCurrentlyBlocking then
+        self:_deactivateBlock()
+    end
+    
+    self._currentThreats = threats
+end
+
+function AutoBlock:_activateBlock(primaryThreat, allThreats)
+    if self:triggerBlock() then
+        self._isCurrentlyBlocking = true
+        if self._detectionSettings.debugMode then
+            print(string.format("[AutoBlock] Block: %s from %s", primaryThreat.config.name, primaryThreat.player))
+        end
+    end
+end
+
+function AutoBlock:_deactivateBlock()
+    if self:triggerUnblock() then
+        self._isCurrentlyBlocking = false
+        self._currentThreats = {}
+    end
+end
+
+-- UPDATED: Uses Character.Network
+function AutoBlock:triggerBlock()
+    local character = self:_getValidatedLocalCharacter()
+    if not character then return false end
+    local remote = self:_getNetworkRemote(character)
+    return self:_executeRemoteEvent(remote, "Block")
+end
+
+-- UPDATED: Uses Character.Network
+function AutoBlock:triggerUnblock()
+    local character = self:_getValidatedLocalCharacter()
+    if not character then return false end
+    local remote = self:_getNetworkRemote(character)
+    return self:_executeRemoteEvent(remote, "Unblock")
+end
+
+function AutoBlock:addThreat(threatId, config)
+    self._threatConfigs[threatId] = config
+end
+
+function AutoBlock:detectThreats()
+    local currentTime = tick()
+    if currentTime - self._lastDetectionRun < DETECTION_INTERVAL then return end
+    self._lastDetectionRun = currentTime
+
+    local localCharacter = self:_getValidatedLocalCharacter()
+    if not localCharacter then return end
+
+    self:_updateValidPlayers()
+    local myPosition = localCharacter.HumanoidRootPart.Position
+    local allDetectedThreats = {}
+    local threatCount = 0
+
+    for i = 1, #self._validPlayers do
+        local player = self._validPlayers[i]
+        local playerThreats = self:_scanPlayerForThreats(player, myPosition)
+        for j = 1, #playerThreats do
+            threatCount = threatCount + 1
+            allDetectedThreats[threatCount] = playerThreats[j]
+        end
+    end
+
+    self:_updateBlockingState(allDetectedThreats)
+end
+
+function AutoBlock:enable()
+    if self.enabled then return false end
+    self.enabled = true
+    self._connectionManager:add(RunService.Stepped:Connect(function()
+        if self.enabled then self:detectThreats() end
+    end))
+    return true
+end
+
+function AutoBlock:disable()
+    if not self.enabled then return false end
+    self.enabled = false
+    self._connectionManager:disconnectAll()
+    self._playerCache = {}
+    self._validPlayers = {}
+    if self._isCurrentlyBlocking then
+        self:triggerUnblock()
+        self._isCurrentlyBlocking = false
+        self._currentThreats = {}
+    end
+    return true
+end
+
+function AutoBlock:destroy()
+    self:disable()
+    if self._connectionManager then
+        self._connectionManager:disconnectAll()
+        self._connectionManager = nil
+    end
+    self._threatConfigs = nil
+    self._currentThreats = nil
+end
+
+function AutoBlock:_isFacing(player, target, maxAngle)
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return false end
+    if not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local fromPos = player.Character.HumanoidRootPart.Position
+    local toPos = target.Character.HumanoidRootPart.Position
+    local lookVector = player.Character.HumanoidRootPart.CFrame.LookVector
+    local direction = (toPos - fromPos).Unit
+    local dot = lookVector:Dot(direction)
+    local angle = math.deg(math.acos(dot))
+    
+    return angle <= (maxAngle or 45)
+end
+
+function AutoBlock:setThreatBlockDistance(threatId, distance)
+    local config = self._threatConfigs[threatId]
+    if config and distance and distance > 0 then
+        config.blockDistance = distance
+    end
+end
+
+function AutoBlock:setBlockRadius(radius)
+    self.blockRadius = radius
+end
+
+return AutoBlock

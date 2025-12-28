@@ -1,0 +1,104 @@
+-- ForceField Module
+-- Handles ForceField detection and management
+
+local ForceField = {}
+ForceField.__index = ForceField
+
+--// Constants
+local CONSTANTS = {
+    FORCEFIELD_DURATION     = 120,    -- ForceField duration in seconds
+    FORCEFIELD_WARNING_TIME = 60,     -- Warning threshold in seconds
+    FORCEFIELD_CRITICAL_TIME= 20,     -- Critical threshold in seconds
+    COLORS = {
+        SAFE     = Color3.fromRGB(0, 255, 0),     -- Green
+        WARNING  = Color3.fromRGB(255, 255, 0),   -- Yellow
+        CRITICAL = Color3.fromRGB(255, 0, 0)      -- Red
+    }
+}
+
+--// Function: ForceField.new
+--// Description: Creates a new ForceField instance.
+function ForceField.new()
+    local self = setmetatable({}, ForceField)
+    return self
+end
+
+--// Function: ForceField:_safeGetAttribute
+--// Description: Safely gets an attribute with fallback value.
+function ForceField:_safeGetAttribute(object, attributeName, fallback)
+    if not object then return fallback end
+    local success, value = pcall(function()
+        return object:GetAttribute(attributeName)
+    end)
+    return success and value or fallback
+end
+
+--// Function: ForceField:hasForceField
+--// Description: Checks if player has ForceField.
+function ForceField:hasForceField(player)
+    if not player or not player.Character then return false end
+    return player.Character:FindFirstChildOfClass("ForceField") ~= nil
+end
+
+--// Function: ForceField:getTimeLeft
+--// Description: Gets remaining ForceField time in seconds.
+function ForceField:getTimeLeft(player)
+    if not player or not player.Character then return 0 end
+    local forceField = player.Character:FindFirstChildOfClass("ForceField")
+    if not forceField then return 0 end
+    local startTime = self:_safeGetAttribute(forceField, "StartTime", tick())
+    local elapsed   = tick() - startTime
+    return math.max(0, CONSTANTS.FORCEFIELD_DURATION - elapsed)
+end
+
+--// Function: ForceField:getColor
+--// Description: Gets ForceField status color based on remaining time.
+function ForceField:getColor(timeLeft)
+    if timeLeft > CONSTANTS.FORCEFIELD_WARNING_TIME then
+        return CONSTANTS.COLORS.SAFE
+    elseif timeLeft > CONSTANTS.FORCEFIELD_CRITICAL_TIME then
+        return CONSTANTS.COLORS.WARNING
+    else
+        return CONSTANTS.COLORS.CRITICAL
+    end
+end
+
+--// Function: ForceField:getData
+--// Description: Gets comprehensive ForceField information.
+function ForceField:getData(player)
+    local hasFF   = self:hasForceField(player)
+    local timeLeft= hasFF and self:getTimeLeft(player) or 0
+    local color   = self:getColor(timeLeft)
+    return {
+        hasForceField     = hasFF,
+        timeLeft          = timeLeft,
+        timeLeftFormatted = string.format("%.1fs", timeLeft),
+        color             = color,
+        status            = hasFF and "Active" or "Inactive"
+    }
+end
+
+--// Function: ForceField:getStatus
+--// Description: Gets ForceField status string.
+function ForceField:getStatus(player)
+    local data = self:getData(player)
+    if data.hasForceField then
+        return string.format("FF: %s", data.timeLeftFormatted)
+    else
+        return "FF: Inactive"
+    end
+end
+
+--// Function: ForceField:isActive
+--// Description: Quick check if ForceField is active.
+function ForceField:isActive(player)
+    return self:hasForceField(player)
+end
+
+--// Function: ForceField:getTimeRemaining
+--// Description: Gets time remaining in seconds.
+function ForceField:getTimeRemaining(player)
+    return self:getTimeLeft(player)
+end
+
+return ForceField 

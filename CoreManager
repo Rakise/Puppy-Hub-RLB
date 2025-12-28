@@ -1,0 +1,380 @@
+-- CoreManager.lua - Streamlined for Combat & Visuals Only
+-- Removed: Automation, Movement, Misc (Leaderboards, Server Browser)
+-- Updated: Uses Character.Network and Humanoid.Tags
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local StatsService = game:GetService("Stats")
+
+local LocalPlayer = Players.LocalPlayer
+local playerGui = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
+
+local REPO_BASE_URL = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/refs/heads/main/'
+local BRAZIL_HUB_BASE_URL = "https://raw.githubusercontent.com/Rakise/Puppy-Hub/refs/heads/main/"
+
+-- Load LinoriaLib
+local Library = loadstring(game:HttpGet(REPO_BASE_URL .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(REPO_BASE_URL .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(REPO_BASE_URL .. 'addons/SaveManager.lua'))()
+
+-- Safe module loading
+local function safeRequire(url)
+    local ok, result = pcall(function()
+        local correctedUrl = url:gsub("http://", "https://") 
+        return loadstring(game:HttpGet(correctedUrl))()
+    end)
+    if ok then return result else warn("[Puppy Hub] Module load error:", url, result) return nil end
+end
+
+-- Load Utilities
+local UtilsService = safeRequire(BRAZIL_HUB_BASE_URL .. "UtilsService")
+local ConnectionManager = safeRequire(BRAZIL_HUB_BASE_URL .. "ConnectionManager")
+local connMgr = ConnectionManager and ConnectionManager.new() or nil
+
+-- Load Modules (Only Visuals & Combat)
+local PlayerESP = safeRequire(BRAZIL_HUB_BASE_URL .. "PlayerESPHandler")
+local AutoAim = safeRequire(BRAZIL_HUB_BASE_URL .. "Auto-Aim")
+local AutoBlock = safeRequire(BRAZIL_HUB_BASE_URL .. "auto_block")
+local Indicator = safeRequire(BRAZIL_HUB_BASE_URL .. "Indicator")
+local SpellPercentage = safeRequire(BRAZIL_HUB_BASE_URL .. "SpellPercentage")
+local TransTrail = safeRequire(BRAZIL_HUB_BASE_URL .. "TransTrail")
+local ComboCounter = safeRequire(BRAZIL_HUB_BASE_URL .. "ComboCounter")
+local CooldownIndicator = safeRequire(BRAZIL_HUB_BASE_URL .. "CooldownIndicator")
+local NoFog = safeRequire(BRAZIL_HUB_BASE_URL .. "NoFog")
+local FOVCircleManager = safeRequire(BRAZIL_HUB_BASE_URL .. "FOVCircleManager")
+
+-- Helper for instantiating
+local function safeNew(module, name, ...)
+    if module and type(module.new) == "function" then
+        local ok, inst = pcall(module.new, ...)
+        if ok then return inst else warn("[Puppy Hub] Error instantiating:", name, inst) return nil end
+    else
+        return nil
+    end
+end
+
+-- Instantiate Only Requested Modules
+local ModuleInstances = {
+    playerEsp = safeNew(PlayerESP, "PlayerESP"),
+    autoAim = safeNew(AutoAim, "AutoAim"),
+    autoBlock = safeNew(AutoBlock, "AutoBlock"),
+    indicator = safeNew(Indicator, "Indicator"),
+    spellPercentage = safeNew(SpellPercentage, "SpellPercentage", playerGui),
+    transTrail = safeNew(TransTrail, "TransTrail"),
+    comboCounter = safeNew(ComboCounter, "ComboCounter", playerGui),
+    cooldownIndicator = safeNew(CooldownIndicator, "CooldownIndicator", playerGui),
+    noFog = safeNew(NoFog, "NoFog"),
+}
+
+-- Global State
+local betterBlockingEnabled = false
+local isBlockingHeld = false
+local lastBlockFire = 0
+-- Tags that prevent blocking
+local unwantedBlockTags = {
+    ["Stun"] = true,
+    ["NoJump"] = true,
+    ["Action"] = true,
+    ["HeavyAttack"] = true,
+    ["LightAttack"] = true,
+    ["Casting"] = true,
+}
+
+local betterManaChargeEnabled = false
+local isChargingHeld = false
+local lastManaChargeAttempt = 0
+
+local features = {
+    PlayerEsp = true,
+    ShowSpellPercentages = false, 
+    ShowCooldowns = false, 
+    ShowComboCounter = true, 
+    TransTrail = false, 
+    NoFog = false,
+}
+
+local CONFIG = {
+    AUTO_AIM = {
+        AVAILABLE_TOOLS = {"Fimbulvetr", "Perflora", "Armis", "Grapple", "Percutiens", "Inferi"},
+        DEFAULT_FOV = 20,
+        DEFAULT_RANGE = 200,
+        DEFAULT_TIME_TO_HIT = 0.15,
+        DEFAULT_STUDS_BEHIND = {min = 20, max = 30}
+    },
+    PLAYER_ESP = {
+        DEFAULT_TEXT_SIZE = 14,
+    }
+}
+
+-- ========================================
+-- HELPER FUNCTIONS (Tags System)
+-- ========================================
+
+-- Helper to check if a tag exists in Humanoid.Tags
+local function hasTag(char, tagName)
+    if not char then return false end
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return false end
+    local tags = hum:FindFirstChild("Tags")
+    if not tags then return false end
+    return tags:FindFirstChild(tagName) ~= nil
+end
+
+-- Helper to get the single Network Remote
+local function getNetwork(char)
+    if not char then return nil end
+    return char:FindFirstChild("Network")
+end
+
+-- ========================================
+-- BETTER BLOCKING LOGIC (Updated for Character.Network)
+-- ========================================
+
+connMgr:add(UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.F then
+        isBlockingHeld = true
+    end
+end))
+
+connMgr:add(UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.F then
+        isBlockingHeld = false
+        if betterBlockingEnabled then
+            local char = LocalPlayer.Character
+            local network = getNetwork(char)
+            if network then
+                network:FireServer("Unblock")
+            end
+        end
+    end
+end))
+
+connMgr:add(RunService.Heartbeat:Connect(function()
+    if not betterBlockingEnabled or not isBlockingHeld then return end
+    
+    if tick() - lastBlockFire < 0.05 then return end
+    lastBlockFire = tick()
+
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    -- Updated Check: Look inside Tags folder
+    local canBlock = true
+    for tagName, _ in pairs(unwantedBlockTags) do
+        if hasTag(char, tagName) then
+            canBlock = false
+            break
+        end
+    end
+
+    if canBlock then
+        local network = getNetwork(char)
+        if network then
+            network:FireServer("Block")
+        end
+    end
+end))
+
+-- ========================================
+-- BETTER MANA CHARGE LOGIC (Updated for Character.Network)
+-- ========================================
+
+local function startManaCharge()
+    local char = LocalPlayer.Character
+    local network = getNetwork(char)
+    if network then network:FireServer("Charge") end
+end
+
+local function stopManaCharge()
+    local char = LocalPlayer.Character
+    local network = getNetwork(char)
+    if network then network:FireServer("StopCharge") end
+end
+
+local function toggleBetterManaCharge(enabled)
+    betterManaChargeEnabled = enabled
+    if enabled then
+        manaInputConnBegan = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.KeyCode == Enum.KeyCode.G then isChargingHeld = true end
+        end)
+        manaInputConnEnded = UserInputService.InputEnded:Connect(function(input, gp)
+            if input.KeyCode == Enum.KeyCode.G then isChargingHeld = false; stopManaCharge() end
+        end)
+    else
+        if manaInputConnBegan then manaInputConnBegan:Disconnect(); manaInputConnBegan = nil end
+        if manaInputConnEnded then manaInputConnEnded:Disconnect(); manaInputConnEnded = nil end
+        isChargingHeld = false
+        stopManaCharge()
+    end
+end
+
+connMgr:add(RunService.Heartbeat:Connect(function()
+    if not betterManaChargeEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    if isChargingHeld then
+        -- Updated Check: Look for "Charge" in Tags folder
+        local isCurrentlyCharging = hasTag(char, "Charge")
+        
+        if not isCurrentlyCharging then
+             local currentPing = 0
+             pcall(function() currentPing = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+             local delay = 0.1 + (currentPing / 900)
+             
+             if tick() - lastManaChargeAttempt > delay then
+                 startManaCharge()
+                 lastManaChargeAttempt = tick()
+             end
+        end
+    end
+end))
+
+-- ========================================
+-- UI & TABS
+-- ========================================
+
+local function createMainWindow()
+    return Library:CreateWindow({
+        Title = '[Puppy Hub] 🐾 - Combat Lite',
+        Center = true,
+        AutoShow = true,
+        TabPadding = 8,
+        MenuFadeTime = 0.2,
+        Size = UDim2.fromOffset(500, 400)
+    })
+end
+
+local function setupTabs(window)
+    return {
+        Visuals = window:AddTab('Visuals'),
+        Combat = window:AddTab('Combat'),
+        UISettings = window:AddTab('UI Settings'),
+    }
+end
+
+local function createPuppyHubTabs(tabs, fovManager)
+    -- >>> VISUALS TAB <<<
+    local playerESPGroup = tabs.Visuals:AddLeftGroupbox('Player ESP')
+    local otherVisualsGroup = tabs.Visuals:AddRightGroupbox('Effects')
+
+    playerESPGroup:AddToggle('PlayerESP', {
+        Text = 'Enable Player ESP', Default = features.PlayerEsp,
+        Callback = function(v) features.PlayerEsp = v; if ModuleInstances.playerEsp then (v and ModuleInstances.playerEsp.enable or ModuleInstances.playerEsp.disable)(ModuleInstances.playerEsp) end end
+    })
+    
+    if ModuleInstances.playerEsp and ModuleInstances.playerEsp.displayConfig then
+        for configKey, defaultValue in pairs(ModuleInstances.playerEsp.displayConfig) do
+            local labelText = configKey:gsub("show", ""):gsub("^%l", string.upper):gsub("PlayerName", "Name"):gsub("HeldItem", "Held Item")
+            playerESPGroup:AddToggle(configKey:gsub("show", "Show") .. "ESP", {
+                Text = "Show " .. labelText, Default = defaultValue,
+                Callback = function(val) if ModuleInstances.playerEsp then ModuleInstances.playerEsp.displayConfig[configKey] = val; ModuleInstances.playerEsp:setDisplayConfig() end end
+            })
+        end
+    end
+    playerESPGroup:AddSlider('PlayerESPTextSize', { Text = 'Text Size', Default = CONFIG.PLAYER_ESP.DEFAULT_TEXT_SIZE, Min = 7, Max = 40, Rounding = 0, Callback = function(v) if ModuleInstances.playerEsp then ModuleInstances.playerEsp:setTextSize(v) end end })
+
+    otherVisualsGroup:AddToggle('TransTrailToggle', { Text = 'Trans Flag Trail', Default = features.TransTrail, Callback = function(v) features.TransTrail = v; if ModuleInstances.transTrail then (v and ModuleInstances.transTrail.enable or ModuleInstances.transTrail.disable)(ModuleInstances.transTrail) end end })
+    otherVisualsGroup:AddToggle('NoFogToggle', { Text = 'Enable NoFog', Default = features.NoFog, Callback = function(v) features.NoFog = v; if ModuleInstances.noFog then (v and ModuleInstances.noFog.enable or ModuleInstances.noFog.disable)(ModuleInstances.noFog) end end })
+
+    -- >>> COMBAT TAB <<<
+    local autoAimGroup = tabs.Combat:AddLeftGroupbox('AutoAim')
+    local autoBlockGroup = tabs.Combat:AddRightGroupbox('Auto Block')
+    local combatVisualsGroup = tabs.Combat:AddLeftGroupbox('Combat Visuals')
+
+    autoAimGroup:AddToggle('AutoAimToggle', {
+        Text = 'Enable Auto-Aim', Default = false,
+        Callback = function(v) if ModuleInstances.autoAim then (v and ModuleInstances.autoAim.enable or ModuleInstances.autoAim.disable)(ModuleInstances.autoAim) end end
+    })
+    autoAimGroup:AddSlider('AutoAimFOV', { Text = 'FOV', Default = CONFIG.AUTO_AIM.DEFAULT_FOV, Min = 5, Max = 90, Rounding = 0, Callback = function(v) if ModuleInstances.autoAim then ModuleInstances.autoAim:setFOV(v) end end })
+    autoAimGroup:AddToggle('ShowFOVCircle', { Text = 'Show FOV Circle', Default = false, Callback = function(v) if fovManager then fovManager:setVisible(v) end end })
+    
+    autoAimGroup:AddDropdown('AutoAimTools', {
+        Values = CONFIG.AUTO_AIM.AVAILABLE_TOOLS, Default = {}, Multi = true, Text = 'Auto-Aim Tools',
+        Callback = function(selected) if ModuleInstances.autoAim then ModuleInstances.autoAim:setTools(selected) end end
+    })
+
+    autoBlockGroup:AddToggle('AutoBlockToggle', {
+        Text = 'Enable Auto Block', Default = false,
+        Callback = function(v) if ModuleInstances.autoBlock then (v and ModuleInstances.autoBlock.enable or ModuleInstances.autoBlock.disable)(ModuleInstances.autoBlock) end end
+    })
+    
+    autoBlockGroup:AddToggle('BetterBlockingToggle', {
+        Text = 'Better Blocking (Safe Block)', Default = false, Tooltip = 'Hold F to block only when character is ready',
+        Callback = function(v) betterBlockingEnabled = v end
+    })
+    
+    autoBlockGroup:AddToggle('BetterManaChargeToggle', {
+        Text = 'Better Mana Charge (Safe Charge)', Default = false, Tooltip = 'Hold G to charge only when character is ready',
+        Callback = function(v) toggleBetterManaCharge(v) end
+    })
+
+    combatVisualsGroup:AddToggle('SpellPercentageToggle', {
+        Text = 'Spell % Overlay', Default = features.ShowSpellPercentages,
+        Callback = function(v) features.ShowSpellPercentages = v; if ModuleInstances.spellPercentage then (v and ModuleInstances.spellPercentage.enable or ModuleInstances.spellPercentage.disable)(ModuleInstances.spellPercentage) end end
+    })
+    combatVisualsGroup:AddToggle('ComboCounterToggle', {
+        Text = 'M1 Combo Counter', Default = features.ShowComboCounter,
+        Callback = function(v) features.ShowComboCounter = v; if ModuleInstances.comboCounter then (v and ModuleInstances.comboCounter.enable or ModuleInstances.comboCounter.disable)(ModuleInstances.comboCounter) end end
+    })
+    combatVisualsGroup:AddToggle('EnableDamageRegenIndicators', { Text = 'Damage/Regen Indicators', Default = false, Callback = function(v) if ModuleInstances.indicator then (v and ModuleInstances.indicator.enable or ModuleInstances.indicator.disable)(ModuleInstances.indicator) end end })
+    combatVisualsGroup:AddToggle('CooldownIndicatorToggle', {
+        Text = 'Show Cooldowns', Default = features.ShowCooldowns,
+        Callback = function(v) features.ShowCooldowns = v; if ModuleInstances.cooldownIndicator then (v and ModuleInstances.cooldownIndicator.enable or ModuleInstances.cooldownIndicator.disable)(ModuleInstances.cooldownIndicator) end end
+    })
+end
+
+local function createUISettingsTab(uiSettingsTab)
+    local menuGroup = uiSettingsTab:AddLeftGroupbox('Menu')
+    menuGroup:AddButton('Unload', function() Library:Unload() end)
+    menuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'Insert', NoUI = true, Text = 'Menu keybind' })
+    Library.ToggleKeybind = Options.MenuKeybind
+end
+
+local function main()
+    local window = createMainWindow()
+    local tabs = setupTabs(window)
+    
+    local fovManager = FOVCircleManager and FOVCircleManager.new()
+    if fovManager then
+        fovManager:setUpdateCallback(function()
+            if ModuleInstances.autoAim then fovManager:updateCircle(ModuleInstances.autoAim, connMgr) end
+        end)
+    end
+    
+    createPuppyHubTabs(tabs, fovManager)
+    createUISettingsTab(tabs.UISettings)
+    
+    ThemeManager:SetLibrary(Library)
+    SaveManager:SetLibrary(Library)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+    ThemeManager:SetFolder('PuppyHubLite')
+    SaveManager:SetFolder('PuppyHubLite/Rogue-Lineage')
+    
+    SaveManager:BuildConfigSection(tabs.UISettings)
+    ThemeManager:ApplyToTab(tabs.UISettings)
+    
+    -- Puppy Theme
+    Library.FontColor = Color3.fromRGB(255, 255, 255)
+    Library.MainColor = Color3.fromRGB(255, 182, 193)
+    Library.BackgroundColor = Color3.fromRGB(255, 204, 213)
+    Library.AccentColor = Color3.fromRGB(255, 105, 180)
+    Library.OutlineColor = Color3.fromRGB(221, 160, 221)
+    Library.RiskColor = Color3.fromRGB(255, 69, 0)
+    Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor)
+    Library:UpdateColorsUsingRegistry()
+    
+    -- Apply initial configs
+    if ModuleInstances.autoAim then
+        ModuleInstances.autoAim:setRange(CONFIG.AUTO_AIM.DEFAULT_RANGE)
+        ModuleInstances.autoAim:setTimeToHit(CONFIG.AUTO_AIM.DEFAULT_TIME_TO_HIT)
+        ModuleInstances.autoAim:setStudsBehindRange(CONFIG.AUTO_AIM.DEFAULT_STUDS_BEHIND.min, CONFIG.AUTO_AIM.DEFAULT_STUDS_BEHIND.max)
+    end
+end
+
+main()
+print("[Puppy Hub] CoreManager Lite Loaded!")

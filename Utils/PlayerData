@@ -1,0 +1,181 @@
+-- PlayerData Module
+-- Handles all player data retrieval and formatting
+
+local PlayerData = {}
+PlayerData.__index = PlayerData
+
+--// Function: PlayerData.new
+--// Description: Creates a new PlayerData instance.
+function PlayerData.new()
+    local self = setmetatable({}, PlayerData)
+    return self
+end
+
+--// Function: PlayerData:_safeGetAttribute
+--// Description: Safely gets a player attribute with fallback value.
+function PlayerData:_safeGetAttribute(player, attributeName, fallback)
+    if not player then return fallback end
+    local success, value = pcall(function()
+        return player:GetAttribute(attributeName)
+    end)
+    return success and value or fallback
+end
+
+--// Function: PlayerData:_formatRogueName
+--// Description: Formats a rogue name based on rank, gender and uber title.
+function PlayerData:_formatRogueName(firstName, lastName, houseRank, gender, uberTitle)
+    local hasLastName = lastName ~= ""
+    local isOwner     = houseRank == "Owner"
+    local hasUberTitle = uberTitle and uberTitle ~= ""
+    
+    local baseName = ""
+    if isOwner and hasLastName then
+        local title = gender == "Female" and "Lady" or "Lord"
+        baseName = string.format("%s %s %s", title, firstName, lastName)
+    else
+        baseName = hasLastName and string.format("%s %s", firstName, lastName) or firstName
+    end
+    
+    -- Add uber title if available
+    if hasUberTitle then
+        return string.format("%s, %s", baseName, uberTitle)
+    end
+    
+    return baseName
+end
+
+--// Function: PlayerData:getBasicData
+--// Description: Retrieves basic player information.
+function PlayerData:getBasicData(player)
+    if not player then return {} end
+    return {
+        name        = player.Name,
+        displayName = player.DisplayName,
+        userId      = player.UserId,
+        accountAge  = player.AccountAge,
+        firstTime   = self:_safeGetAttribute(player, "FirstTime", false)
+    }
+end
+
+--// Function: PlayerData:_safeGetLeaderstat
+--// Description: Safely gets a leaderstat value with fallback.
+function PlayerData:_safeGetLeaderstat(player, statName, fallback)
+    if not player or not player:FindFirstChild("leaderstats") then return fallback end
+    local leaderstats = player.leaderstats
+    local stat = leaderstats:FindFirstChild(statName)
+    return stat and stat.Value or fallback
+end
+
+--// Function: PlayerData:_getPlayerDataWithFallback
+--// Description: Gets player data with attribute fallback to leaderstats.
+function PlayerData:_getPlayerDataWithFallback(player, dataName, fallback)
+    if not player then return fallback end
+    
+    -- Try attribute first
+    local attributeValue = self:_safeGetAttribute(player, dataName, nil)
+    if attributeValue ~= nil then
+        return attributeValue
+    end
+    
+    -- Fallback to leaderstats
+    return self:_safeGetLeaderstat(player, dataName, fallback)
+end
+
+--// Function: PlayerData:getRogueData
+--// Description: Retrieves player rogue information with attribute fallback to leaderstats.
+function PlayerData:getRogueData(player)
+    if not player then return {} end
+    
+    local firstName = tostring(self:_getPlayerDataWithFallback(player, "FirstName", ""))
+    local lastName  = tostring(self:_getPlayerDataWithFallback(player, "LastName", ""))
+    local houseRank = self:_getPlayerDataWithFallback(player, "HouseRank", nil)
+    local gender    = self:_getPlayerDataWithFallback(player, "Gender", nil)
+    local uberTitle = tostring(self:_getPlayerDataWithFallback(player, "UberTitle", ""))
+    
+    local rogueName = self:_formatRogueName(firstName, lastName, houseRank, gender, uberTitle)
+    return {
+        firstName    = firstName,
+        lastName     = lastName,
+        houseRank    = houseRank,
+        gender       = gender,
+        uberTitle    = uberTitle,
+        rogueName    = rogueName,
+        fullRogueName= rogueName -- Kept for backward compatibility
+    }
+end
+
+--// Function: PlayerData:getEdictData
+--// Description: Retrieves player edict information with attribute fallback to leaderstats.
+function PlayerData:getEdictData(player)
+    if not player then return {} end
+    local edict = self:_getPlayerDataWithFallback(player, "Edict", "None")
+    return {
+        edict        = edict,
+        edictDisplay = edict
+    }
+end
+
+--// Function: PlayerData:getPrestigeData
+--// Description: Retrieves player prestige information with attribute fallback to leaderstats.
+function PlayerData:getPrestigeData(player)
+    if not player then return { level = 0 } end
+    local prestigeLevel = self:_getPlayerDataWithFallback(player, "Prestige", 0)
+    return {
+        level       = prestigeLevel,
+        hasPrestige = prestigeLevel > 0
+    }
+end
+
+--// Function: PlayerData:getHealthData
+--// Description: Retrieves player health information.
+function PlayerData:getHealthData(player)
+    if not player or not player.Character then return {} end
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return {} end
+    local health       = math.floor(humanoid.Health)
+    local maxHealth    = math.floor(humanoid.MaxHealth)
+    local healthPercent= maxHealth > 0 and math.floor((health / maxHealth) * 100) or 0
+    return {
+        health               = health,
+        maxHealth            = maxHealth,
+        healthPercent        = healthPercent,
+        healthDisplay        = string.format("%d/%d", health, maxHealth),
+        healthPercentDisplay = string.format("%d%%", healthPercent)
+    }
+end
+
+--// Function: PlayerData:getFullData
+--// Description: Retrieves complete player data structure.
+function PlayerData:getFullData(player)
+    if not player then return {} end
+    return {
+        basic    = self:getBasicData(player),
+        rogue    = self:getRogueData(player),
+        edict    = self:getEdictData(player),
+        prestige = self:getPrestigeData(player),
+        health   = self:getHealthData(player)
+    }
+end
+
+--// Function: PlayerData:getRogueDisplay
+--// Description: Gets formatted rogue name for display.
+function PlayerData:getRogueDisplay(player)
+    local rogueData = self:getRogueData(player)
+    return rogueData.rogueName or ""
+end
+
+--// Function: PlayerData:getEdictDisplay
+--// Description: Gets formatted edict for display.
+function PlayerData:getEdictDisplay(player)
+    local edictData = self:getEdictData(player)
+    return edictData.edictDisplay or "None"
+end
+
+--// Function: PlayerData:getHealthDisplay
+--// Description: Gets formatted health for display.
+function PlayerData:getHealthDisplay(player)
+    local healthData = self:getHealthData(player)
+    return healthData.healthDisplay or "0/0", healthData.healthPercentDisplay or "0%"
+end
+
+return PlayerData 
