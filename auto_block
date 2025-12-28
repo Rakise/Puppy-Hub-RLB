@@ -5,7 +5,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 -- External dependency
-local ConnectionManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub/refs/heads/main/ConnectionManager"))()
+local ConnectionManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub-RLB/refs/heads/main/ConnectionManager"))()
 
 local DEFAULT_BLOCK_RADIUS = 200
 local LOCAL_PLAYER = Players.LocalPlayer
