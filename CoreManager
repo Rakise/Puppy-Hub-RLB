@@ -1,5 +1,5 @@
--- CoreManager.lua - Updated with Better Movement
--- Streamlined for Combat & Visuals Only
+-- CoreManager.lua - Streamlined for Combat & Visuals Only
+-- Removed: Automation, Movement, Misc (Leaderboards, Server Browser)
 -- Updated: Uses Character.Network and Humanoid.Tags
 
 local Players = game:GetService("Players")
@@ -32,7 +32,7 @@ local UtilsService = safeRequire(BRAZIL_HUB_BASE_URL .. "UtilsService")
 local ConnectionManager = safeRequire(BRAZIL_HUB_BASE_URL .. "ConnectionManager")
 local connMgr = ConnectionManager and ConnectionManager.new() or nil
 
--- Load Modules
+-- Load Modules (Only Visuals & Combat)
 local PlayerESP = safeRequire(BRAZIL_HUB_BASE_URL .. "PlayerESPHandler")
 local AutoAim = safeRequire(BRAZIL_HUB_BASE_URL .. "Auto-Aim")
 local AutoBlock = safeRequire(BRAZIL_HUB_BASE_URL .. "auto_block")
@@ -43,7 +43,6 @@ local ComboCounter = safeRequire(BRAZIL_HUB_BASE_URL .. "ComboCounter")
 local CooldownIndicator = safeRequire(BRAZIL_HUB_BASE_URL .. "CooldownIndicator")
 local NoFog = safeRequire(BRAZIL_HUB_BASE_URL .. "NoFog")
 local FOVCircleManager = safeRequire(BRAZIL_HUB_BASE_URL .. "FOVCircleManager")
-local BetterMovement = safeRequire(BRAZIL_HUB_BASE_URL .. "BetterMovement") -- NEW MODULE
 
 -- Helper for instantiating
 local function safeNew(module, name, ...)
@@ -55,7 +54,7 @@ local function safeNew(module, name, ...)
     end
 end
 
--- Instantiate Modules
+-- Instantiate Only Requested Modules
 local ModuleInstances = {
     playerEsp = safeNew(PlayerESP, "PlayerESP"),
     autoAim = safeNew(AutoAim, "AutoAim"),
@@ -66,17 +65,25 @@ local ModuleInstances = {
     comboCounter = safeNew(ComboCounter, "ComboCounter", playerGui),
     cooldownIndicator = safeNew(CooldownIndicator, "CooldownIndicator", playerGui),
     noFog = safeNew(NoFog, "NoFog"),
-    betterMovement = safeNew(BetterMovement, "BetterMovement"),
 }
 
--- Global State (Legacy Blocking)
+-- Global State
 local betterBlockingEnabled = false
 local isBlockingHeld = false
 local lastBlockFire = 0
+-- Tags that prevent blocking
 local unwantedBlockTags = {
-    ["Stun"] = true, ["NoJump"] = true, ["Action"] = true,
-    ["HeavyAttack"] = true, ["LightAttack"] = true, ["Casting"] = true,
+    ["Stun"] = true,
+    ["NoJump"] = true,
+    ["Action"] = true,
+    ["HeavyAttack"] = true,
+    ["LightAttack"] = true,
+    ["Casting"] = true,
 }
+
+local betterManaChargeEnabled = false
+local isChargingHeld = false
+local lastManaChargeAttempt = 0
 
 local features = {
     PlayerEsp = true,
@@ -101,9 +108,10 @@ local CONFIG = {
 }
 
 -- ========================================
--- HELPER FUNCTIONS
+-- HELPER FUNCTIONS (Tags System)
 -- ========================================
 
+-- Helper to check if a tag exists in Humanoid.Tags
 local function hasTag(char, tagName)
     if not char then return false end
     local hum = char:FindFirstChild("Humanoid")
@@ -113,18 +121,21 @@ local function hasTag(char, tagName)
     return tags:FindFirstChild(tagName) ~= nil
 end
 
+-- Helper to get the single Network Remote
 local function getNetwork(char)
     if not char then return nil end
     return char:FindFirstChild("Network")
 end
 
 -- ========================================
--- BETTER BLOCKING LOGIC
+-- BETTER BLOCKING LOGIC (Updated for Character.Network)
 -- ========================================
 
 connMgr:add(UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    if input.KeyCode == Enum.KeyCode.F then isBlockingHeld = true end
+    if input.KeyCode == Enum.KeyCode.F then
+        isBlockingHeld = true
+    end
 end))
 
 connMgr:add(UserInputService.InputEnded:Connect(function(input)
@@ -133,27 +144,92 @@ connMgr:add(UserInputService.InputEnded:Connect(function(input)
         if betterBlockingEnabled then
             local char = LocalPlayer.Character
             local network = getNetwork(char)
-            if network then network:FireServer("Unblock") end
+            if network then
+                network:FireServer("Unblock")
+            end
         end
     end
 end))
 
 connMgr:add(RunService.Heartbeat:Connect(function()
     if not betterBlockingEnabled or not isBlockingHeld then return end
+    
     if tick() - lastBlockFire < 0.05 then return end
     lastBlockFire = tick()
 
     local char = LocalPlayer.Character
     if not char then return end
 
+    -- Updated Check: Look inside Tags folder
     local canBlock = true
     for tagName, _ in pairs(unwantedBlockTags) do
-        if hasTag(char, tagName) then canBlock = false; break end
+        if hasTag(char, tagName) then
+            canBlock = false
+            break
+        end
     end
 
     if canBlock then
         local network = getNetwork(char)
-        if network then network:FireServer("Block") end
+        if network then
+            network:FireServer("Block")
+        end
+    end
+end))
+
+-- ========================================
+-- BETTER MANA CHARGE LOGIC (Updated for Character.Network)
+-- ========================================
+
+local function startManaCharge()
+    local char = LocalPlayer.Character
+    local network = getNetwork(char)
+    if network then network:FireServer("Charge") end
+end
+
+local function stopManaCharge()
+    local char = LocalPlayer.Character
+    local network = getNetwork(char)
+    if network then network:FireServer("StopCharge") end
+end
+
+local function toggleBetterManaCharge(enabled)
+    betterManaChargeEnabled = enabled
+    if enabled then
+        manaInputConnBegan = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.KeyCode == Enum.KeyCode.G then isChargingHeld = true end
+        end)
+        manaInputConnEnded = UserInputService.InputEnded:Connect(function(input, gp)
+            if input.KeyCode == Enum.KeyCode.G then isChargingHeld = false; stopManaCharge() end
+        end)
+    else
+        if manaInputConnBegan then manaInputConnBegan:Disconnect(); manaInputConnBegan = nil end
+        if manaInputConnEnded then manaInputConnEnded:Disconnect(); manaInputConnEnded = nil end
+        isChargingHeld = false
+        stopManaCharge()
+    end
+end
+
+connMgr:add(RunService.Heartbeat:Connect(function()
+    if not betterManaChargeEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    if isChargingHeld then
+        -- Updated Check: Look for "Charge" in Tags folder
+        local isCurrentlyCharging = hasTag(char, "Charge")
+        
+        if not isCurrentlyCharging then
+             local currentPing = 0
+             pcall(function() currentPing = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+             local delay = 0.1 + (currentPing / 900)
+             
+             if tick() - lastManaChargeAttempt > delay then
+                 startManaCharge()
+                 lastManaChargeAttempt = tick()
+             end
+        end
     end
 end))
 
@@ -168,7 +244,7 @@ local function createMainWindow()
         AutoShow = true,
         TabPadding = 8,
         MenuFadeTime = 0.2,
-        Size = UDim2.fromOffset(550, 450)
+        Size = UDim2.fromOffset(500, 400)
     })
 end
 
@@ -176,7 +252,6 @@ local function setupTabs(window)
     return {
         Visuals = window:AddTab('Visuals'),
         Combat = window:AddTab('Combat'),
-        Movement = window:AddTab('Movement'),
         UISettings = window:AddTab('UI Settings'),
     }
 end
@@ -231,6 +306,11 @@ local function createPuppyHubTabs(tabs, fovManager)
         Text = 'Better Blocking (Safe Block)', Default = false, Tooltip = 'Hold F to block only when character is ready',
         Callback = function(v) betterBlockingEnabled = v end
     })
+    
+    autoBlockGroup:AddToggle('BetterManaChargeToggle', {
+        Text = 'Better Mana Charge (Safe Charge)', Default = false, Tooltip = 'Hold G to charge only when character is ready',
+        Callback = function(v) toggleBetterManaCharge(v) end
+    })
 
     combatVisualsGroup:AddToggle('SpellPercentageToggle', {
         Text = 'Spell % Overlay', Default = features.ShowSpellPercentages,
@@ -244,20 +324,6 @@ local function createPuppyHubTabs(tabs, fovManager)
     combatVisualsGroup:AddToggle('CooldownIndicatorToggle', {
         Text = 'Show Cooldowns', Default = features.ShowCooldowns,
         Callback = function(v) features.ShowCooldowns = v; if ModuleInstances.cooldownIndicator then (v and ModuleInstances.cooldownIndicator.enable or ModuleInstances.cooldownIndicator.disable)(ModuleInstances.cooldownIndicator) end end
-    })
-
-    -- >>> MOVEMENT TAB <<<
-    local movementGroup = tabs.Movement:AddLeftGroupbox('Better Movement')
-    
-    movementGroup:AddToggle('BetterMovementToggle', {
-        Text = 'Enable Better Movement', 
-        Default = false,
-        Tooltip = 'Auto Sprint + Charge while Moving (Infinite Sprint)',
-        Callback = function(v) 
-            if ModuleInstances.betterMovement then 
-                (v and ModuleInstances.betterMovement.enable or ModuleInstances.betterMovement.disable)(ModuleInstances.betterMovement) 
-            end 
-        end
     })
 end
 
