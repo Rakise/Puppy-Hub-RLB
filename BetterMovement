@@ -1,0 +1,111 @@
+-- BetterMovement: Auto Sprint + Charge while Moving (Infinite Sprint)
+-- Bypasses client-side checks to allow charging while sprinting.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local ConnectionManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rakise/Puppy-Hub-RLB/refs/heads/main/ConnectionManager"))()
+
+local LOCAL_PLAYER = Players.LocalPlayer
+local MANA_THRESHOLD = 20 -- Start charging if mana drops below this
+
+local BetterMovement = {}
+BetterMovement.__index = BetterMovement
+
+function BetterMovement.new()
+    local self = setmetatable({}, BetterMovement)
+    self.enabled = false
+    self._connectionManager = ConnectionManager.new()
+    return self
+end
+
+-- Helper: Check Tag
+function BetterMovement:_hasTag(char, tagName)
+    if not char then return false end
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return false end
+    local tags = hum:FindFirstChild("Tags")
+    if not tags then return false end
+    return tags:FindFirstChild(tagName) ~= nil
+end
+
+-- Helper: Get Network Remote
+function BetterMovement:_getNetwork(char)
+    return char:FindFirstChild("Network")
+end
+
+-- Main Logic Loop
+function BetterMovement:_update()
+    local char = LOCAL_PLAYER.Character
+    if not char then return end
+    
+    local hum = char:FindFirstChild("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local mana = char:FindFirstChild("Mana")
+    local network = self:_getNetwork(char)
+    
+    if not hum or not root or not mana or not network then return end
+
+    -- Check if player is trying to move (WASD)
+    local isMoving = hum.MoveDirection.Magnitude > 0
+    
+    if isMoving then
+        -- 1. Auto Sprint Logic
+        -- If we aren't sprinting, force it. 
+        -- We spam it slightly to override any server-side stops from charging, 
+        -- but check the tag to avoid overloading network if stable.
+        if not self:_hasTag(char, "Sprinting") or self:_hasTag(char, "Charge") then
+            network:FireServer("Sprinting")
+        end
+
+        -- 2. Charge Logic (Infinite Stamina)
+        -- If mana is low, charge WHILE moving. 
+        -- The "Sprinting" call above ensures we don't slow down (stops the walkspeed reset).
+        if mana.Value < MANA_THRESHOLD then
+             if not self:_hasTag(char, "Charge") then
+                 network:FireServer("Charge")
+             end
+        else
+             -- Stop charging if we are full/high enough to avoid annoying audio/visuals if desired
+             -- But user said "never stop sprinting", implying priority is speed. 
+             -- We stop charging when mana is full to let normal regen work or just be clean.
+             if mana.Value >= (mana.MaxValue or 100) * 0.9 and self:_hasTag(char, "Charge") then
+                 network:FireServer("StopCharge")
+             end
+        end
+    else
+        -- If we stopped moving, clean up states
+        if self:_hasTag(char, "Sprinting") then
+            network:FireServer("StopSprint")
+        end
+        if self:_hasTag(char, "Charge") then
+            network:FireServer("StopCharge")
+        end
+    end
+end
+
+function BetterMovement:enable()
+    if self.enabled then return end
+    self.enabled = true
+    
+    self._connectionManager:add(RunService.Heartbeat:Connect(function()
+        self:_update()
+    end))
+end
+
+function BetterMovement:disable()
+    if not self.enabled then return end
+    self.enabled = false
+    self._connectionManager:disconnectAll()
+    
+    -- Cleanup states on disable
+    local char = LOCAL_PLAYER.Character
+    local network = char and self:_getNetwork(char)
+    if network then
+        network:FireServer("StopSprint")
+        network:FireServer("StopCharge")
+    end
+end
+
+return BetterMovement
